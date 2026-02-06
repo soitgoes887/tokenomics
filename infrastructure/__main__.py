@@ -1,11 +1,13 @@
 """Pulumi program to deploy tokenomics to Kubernetes."""
 
+import os
+
 import pulumi
 import pulumi_kubernetes as k8s
 
 config = pulumi.Config("tokenomics")
 
-image = config.get("image") or "anicu/tokenomics:latest"
+image = os.environ.get("IMAGE_TAG", config.get("image") or "anicu/tokenomics:latest")
 namespace_name = config.get("namespace") or "tokenomics"
 alpaca_api_key = config.require_secret("alpaca_api_key")
 alpaca_secret_key = config.require_secret("alpaca_secret_key")
