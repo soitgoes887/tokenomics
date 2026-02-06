@@ -1,0 +1,3 @@
+config:
+  tokenomics:image: anicu/tokenomics:latest
+  tokenomics:namespace: tokenomics

@@ -1,0 +1,41 @@
+strategy:
+  name: "news-sentiment-satellite"
+  capital_usd: 10000
+  position_size_min_usd: 500
+  position_size_max_usd: 1000
+  max_open_positions: 10
+  target_new_positions_per_month: 15
+
+sentiment:
+  model: "gemini-2.5-flash-lite"
+  min_conviction: 20
+  temperature: 0.1
+  max_output_tokens: 512
+
+risk:
+  stop_loss_pct: 0.025
+  take_profit_pct: 0.06
+  max_hold_trading_days: 65
+  daily_loss_limit_pct: 0.05
+  monthly_loss_limit_pct: 0.10
+
+news:
+  poll_interval_seconds: 30
+  symbols: []
+  include_content: true
+  exclude_contentless: false
+  lookback_minutes: 5
+
+trading:
+  paper: true
+  market_hours_only: false
+  order_type: "market"
+  time_in_force: "day"
+
+logging:
+  level: "INFO"
+  trade_log: "logs/trades.log"
+  decision_log: "logs/decisions.log"
+  app_log: "logs/tokenomics.log"
+  max_bytes: 10485760
+  backup_count: 5

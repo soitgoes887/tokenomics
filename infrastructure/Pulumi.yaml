@@ -1,0 +1,6 @@
+name: tokenomics
+runtime:
+  name: python
+  options:
+    virtualenv: venv
+description: Kubernetes deployment for the tokenomics trading system
