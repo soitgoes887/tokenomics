@@ -85,3 +85,27 @@ jobs:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
           IMAGE_TAG: anicu/tokenomics:${{ needs.build-and-push.outputs.image_tag }}
+
+  release:
+    needs: [build-and-push, deploy]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ needs.build-and-push.outputs.image_tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "**Image:** \`anicu/tokenomics:${{ needs.build-and-push.outputs.image_tag }}\`
+
+          **Deployed to:** k8s cluster (dev stack)
+
+          **Commit:** ${{ github.sha }}"
