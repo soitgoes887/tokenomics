@@ -63,6 +63,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -78,5 +84,4 @@ jobs:
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
-          KUBECONFIG: ${{ secrets.KUBECONFIG_PATH }}
           IMAGE_TAG: anicu/tokenomics:${{ needs.build-and-push.outputs.image_tag }}
