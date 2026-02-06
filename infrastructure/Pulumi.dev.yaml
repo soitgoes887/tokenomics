@@ -1,3 +1,9 @@
 config:
-  tokenomics:image: anicu/tokenomics:latest
+  tokenomics:image: anicu/tokenomics:20260206-ea0f9b5
   tokenomics:namespace: tokenomics
+  tokenomics:alpaca_api_key:
+    secure: AAABAA4dCf/NpqvP/2isl0hhwuz2sUAC56TnPkJORZYJzWKOykx2EGCHWJY5NKEVOirqhKYHxwkjNA==
+  tokenomics:alpaca_secret_key:
+    secure: AAABAEAzUQObXwTT4stq607bFvRHgr/n68XMeIxKaMDcYly9Rg0YdMI0pugmsIbzCbWk/Nz/N5SE6oABkwd9hVrNlEQQZkfzKVuqDg==
+  tokenomics:gemini_api_key:
+    secure: AAABAK1oKlTu3/kkJAD9jZa2eKj2rM47/QX0O/ATWjViT+IFQwdJOLvV4Nb7+U0VIutC8CkNpCwX/mjANHjn9H9xYGKCQ6I=
