@@ -7,6 +7,7 @@ from tokenomics.trading.base import BrokerProvider
 
 NEWS_PROVIDERS = {
     "alpaca": "tokenomics.news.fetcher:AlpacaNewsProvider",
+    "finnhub": "tokenomics.news.finnhub:FinnhubNewsProvider",
 }
 
 LLM_PROVIDERS = {

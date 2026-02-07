@@ -46,6 +46,9 @@ class TokenomicsEngine:
             strategy=self._config.strategy.name,
             paper=self._config.trading.paper,
             capital=self._config.strategy.capital_usd,
+            news_provider=self._config.providers.news,
+            llm_provider=self._config.providers.llm,
+            broker_provider=self._config.providers.broker,
         )
 
         self._running = True
