@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokenomics.analysis.sentiment import SentimentAnalyzer
+from tokenomics.analysis.sentiment import GeminiLLMProvider
 from tokenomics.models import NewsArticle, Sentiment, TimeHorizon
 
 
@@ -15,7 +15,7 @@ class TestSentimentAnalyzer:
     def analyzer(self, test_config, mock_secrets):
         with patch("tokenomics.analysis.sentiment.genai") as mock_genai:
             with patch("tokenomics.analysis.sentiment.get_decision_logger"):
-                a = SentimentAnalyzer(test_config, mock_secrets)
+                a = GeminiLLMProvider(test_config, mock_secrets)
                 a._client = MagicMock()
                 return a
 

@@ -62,7 +62,14 @@ class LoggingConfig(BaseModel):
     backup_count: int = 5
 
 
+class ProvidersConfig(BaseModel):
+    news: str = "alpaca"
+    llm: str = "gemini-flash"
+    broker: str = "alpaca-paper"
+
+
 class AppConfig(BaseModel):
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     strategy: StrategyConfig
     sentiment: SentimentConfig
     risk: RiskConfig

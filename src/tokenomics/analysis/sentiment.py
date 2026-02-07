@@ -11,6 +11,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from tokenomics.analysis.base import LLMProvider
 from tokenomics.config import AppConfig, Secrets
 from tokenomics.logging_config import get_decision_logger
 from tokenomics.models import (
@@ -47,7 +48,7 @@ Rules:
 - Focus on material impact, not noise"""
 
 
-class SentimentAnalyzer:
+class GeminiLLMProvider(LLMProvider):
     """Analyzes news articles for trading sentiment using Gemini."""
 
     def __init__(self, config: AppConfig, secrets: Secrets):

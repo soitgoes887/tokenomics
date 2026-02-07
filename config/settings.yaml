@@ -1,3 +1,8 @@
+providers:
+  news: alpaca
+  llm: gemini-flash
+  broker: alpaca-paper
+
 strategy:
   name: "news-sentiment-satellite"
   capital_usd: 10000

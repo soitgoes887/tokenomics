@@ -8,6 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from tokenomics.config import AppConfig, Secrets
 from tokenomics.models import TradeSignal
+from tokenomics.trading.base import BrokerProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -24,7 +25,7 @@ def _is_crypto(symbol: str) -> bool:
     return any(symbol.endswith(suffix) for suffix in CRYPTO_SUFFIXES) and "/" not in symbol and len(symbol) > 4
 
 
-class AlpacaBroker:
+class AlpacaBrokerProvider(BrokerProvider):
     """Handles all interactions with Alpaca Trading API."""
 
     def __init__(self, config: AppConfig, secrets: Secrets):

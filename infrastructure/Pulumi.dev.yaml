@@ -1,6 +1,10 @@
 config:
   tokenomics:image: anicu/tokenomics:20260206-ea0f9b5
   tokenomics:namespace: tokenomics
+  tokenomics:profiles: >
+    [
+      {"news": "alpaca", "llm": "gemini-flash", "broker": "alpaca-paper"}
+    ]
   tokenomics:alpaca_api_key:
     secure: AAABAA4dCf/NpqvP/2isl0hhwuz2sUAC56TnPkJORZYJzWKOykx2EGCHWJY5NKEVOirqhKYHxwkjNA==
   tokenomics:alpaca_secret_key:
