@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "last_saved": "2026-02-09T21:21:43.926890+00:00",
+  "positions": {
+    "positions": {
+      "CFG": {
+        "symbol": "CFG",
+        "alpaca_order_id": "adopted",
+        "entry_price": 68.21,
+        "quantity": 7.330156868,
+        "position_size_usd": 499.98999996628,
+        "entry_date": "2026-02-09T21:08:37.659657Z",
+        "signal": null,
+        "stop_loss_price": 66.50474999999999,
+        "take_profit_price": 72.3026,
+        "max_hold_date": "2026-05-11T21:08:37.659657Z",
+        "status": "open",
+        "exit_price": null,
+        "exit_date": null,
+        "pnl_usd": null,
+        "pnl_pct": null
+      },
+      "CW": {
+        "symbol": "CW",
+        "alpaca_order_id": "adopted",
+        "entry_price": 660.432,
+        "quantity": 0.883240061,
+        "position_size_usd": 583.319999966352,
+        "entry_date": "2026-02-09T21:08:37.659657Z",
+        "signal": null,
+        "stop_loss_price": 643.9212,
+        "take_profit_price": 700.0579200000001,
+        "max_hold_date": "2026-05-11T21:08:37.659657Z",
+        "status": "open",
+        "exit_price": null,
+        "exit_date": null,
+        "pnl_usd": null,
+        "pnl_pct": null
+      },
+      "IMVT": {
+        "symbol": "IMVT",
+        "alpaca_order_id": "adopted",
+        "entry_price": 27.57,
+        "quantity": 21.157780195,
+        "position_size_usd": 583.31999997615,
+        "entry_date": "2026-02-09T21:08:37.659657Z",
+        "signal": null,
+        "stop_loss_price": 26.88075,
+        "take_profit_price": 29.224200000000003,
+        "max_hold_date": "2026-05-11T21:08:37.659657Z",
+        "status": "open",
+        "exit_price": null,
+        "exit_date": null,
+        "pnl_usd": null,
+        "pnl_pct": null
+      },
+      "ROIV": {
+        "symbol": "ROIV",
+        "alpaca_order_id": "adopted",
+        "entry_price": 26.464976,
+        "quantity": 44.082412281,
+        "position_size_usd": 1166.6399830387704,
+        "entry_date": "2026-02-09T21:08:37.659657Z",
+        "signal": null,
+        "stop_loss_price": 25.8033516,
+        "take_profit_price": 28.052874560000003,
+        "max_hold_date": "2026-05-11T21:08:37.659657Z",
+        "status": "open",
+        "exit_price": null,
+        "exit_date": null,
+        "pnl_usd": null,
+        "pnl_pct": null
+      }
+    },
+    "closed_positions": []
+  },
+  "risk": {
+    "daily_pnl": {},
+    "monthly_pnl": {}
+  },
+  "seen_article_ids": []
+}

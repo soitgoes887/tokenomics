@@ -1,5 +1,5 @@
 providers:
-  news: alpaca
+  news: marketaux
   llm: perplexity-sonar
   broker: alpaca-paper
 

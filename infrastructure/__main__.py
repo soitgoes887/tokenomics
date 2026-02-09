@@ -15,6 +15,7 @@ alpaca_secret_key = config.require_secret("alpaca_secret_key")
 gemini_api_key = config.require_secret("gemini_api_key")
 finnhub_api_key = config.require_secret("finnhub_api_key")
 perplexity_api_key = config.require_secret("perplexity_api_key")
+marketaux_api_key = config.require_secret("marketaux_api_key")
 
 # Default model for each LLM provider
 LLM_DEFAULT_MODELS = {
@@ -122,7 +123,23 @@ secret = k8s.core.v1.Secret(
         "GEMINI_API_KEY": gemini_api_key,
         "FINNHUB_API_KEY": finnhub_api_key,
         "PERPLEXITY_API_KEY": perplexity_api_key,
+        "MARKETAUX_API_KEY": marketaux_api_key,
     },
+)
+
+# Shared PVC for state (all profiles read/write their own state file here)
+pvc = k8s.core.v1.PersistentVolumeClaim(
+    "tokenomics-data",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="tokenomics-data",
+        namespace=namespace.metadata.name,
+    ),
+    spec=k8s.core.v1.PersistentVolumeClaimSpecArgs(
+        access_modes=["ReadWriteMany"],
+        resources=k8s.core.v1.VolumeResourceRequirementsArgs(
+            requests={"storage": "1Gi"},
+        ),
+    ),
 )
 
 # Create a deployment for each profile
@@ -222,7 +239,9 @@ sentiment:
                         ),
                         k8s.core.v1.VolumeArgs(
                             name="data",
-                            empty_dir=k8s.core.v1.EmptyDirVolumeSourceArgs(),
+                            persistent_volume_claim=k8s.core.v1.PersistentVolumeClaimVolumeSourceArgs(
+                                claim_name=pvc.metadata.name,
+                            ),
                         ),
                         k8s.core.v1.VolumeArgs(
                             name="logs",

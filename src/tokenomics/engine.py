@@ -1,6 +1,7 @@
 """Main event loop orchestrating the news sentiment trading system."""
 
 import asyncio
+import glob
 import json
 import signal as signal_mod
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from tokenomics.trading.signals import SignalGenerator
 
 logger = structlog.get_logger(__name__)
 
-STATE_FILE = Path("data/state.json")
+STATE_DIR = Path("data")
 
 
 class TokenomicsEngine:
@@ -39,6 +40,10 @@ class TokenomicsEngine:
         self._running = False
         self._tick_count = 0
 
+        # Per-profile state file so multiple pods don't clobber each other
+        profile_id = f"{config.providers.news}-{config.providers.llm}-{config.providers.broker}"
+        self._state_file = STATE_DIR / f"state-{profile_id}.json"
+
     async def start(self) -> None:
         """Start the engine. Runs until shutdown signal received."""
         logger.info(
@@ -53,8 +58,8 @@ class TokenomicsEngine:
 
         self._running = True
         self._register_signal_handlers()
-        self._preflight_checks()
         self._restore_state()
+        self._preflight_checks()
 
         try:
             while self._running:
@@ -110,7 +115,22 @@ class TokenomicsEngine:
             # Step 5: Analyze sentiment and generate signals
             results = self._analyzer.analyze_batch(articles)
 
+            logger.info(
+                "tokenomics.sentiment_complete",
+                articles=len(articles),
+                results=len(results),
+            )
+
             for result in results:
+                logger.debug(
+                    "tokenomics.sentiment_result",
+                    symbol=result.symbol,
+                    sentiment=result.sentiment.value,
+                    conviction=result.conviction,
+                    time_horizon=result.time_horizon.value,
+                    headline=result.headline[:60],
+                )
+
                 # Step 6: Generate signal
                 signal = self._signal_gen.evaluate(
                     result,
@@ -119,6 +139,14 @@ class TokenomicsEngine:
                 )
                 if signal is None:
                     continue
+
+                logger.info(
+                    "tokenomics.signal_generated",
+                    symbol=signal.symbol,
+                    action=signal.action.value,
+                    conviction=signal.conviction,
+                    position_size_usd=signal.position_size_usd,
+                )
 
                 # Step 7: Risk check
                 account = self._broker.get_account()
@@ -131,6 +159,7 @@ class TokenomicsEngine:
                     logger.info(
                         "tokenomics.signal_rejected",
                         symbol=signal.symbol,
+                        action=signal.action.value,
                         reason=reason,
                     )
                     continue
@@ -164,6 +193,15 @@ class TokenomicsEngine:
         """Submit order and record position."""
         try:
             if signal.action == TradeAction.BUY:
+                # Check if any other pod already holds this symbol
+                if self._is_symbol_held_by_any_pod(signal.symbol):
+                    logger.info(
+                        "tokenomics.duplicate_prevented",
+                        symbol=signal.symbol,
+                        msg="Another profile already holds this position",
+                    )
+                    return
+
                 order_id = self._broker.submit_buy_order(signal)
 
                 # Get fill info from broker position
@@ -290,7 +328,8 @@ class TokenomicsEngine:
             )
             all_ok = False
 
-        # News provider check
+        # News provider check — save/restore seen_ids so articles aren't consumed
+        saved_seen = self._fetcher.get_seen_ids()
         try:
             articles = self._fetcher.fetch_new_articles()
             logger.info(
@@ -305,6 +344,8 @@ class TokenomicsEngine:
                 error=str(e),
             )
             all_ok = False
+        finally:
+            self._fetcher.restore_seen_ids(saved_seen)
 
         # LLM provider check — send a minimal test prompt
         try:
@@ -363,12 +404,37 @@ class TokenomicsEngine:
         logger.info("tokenomics.shutting_down")
         self._persist_state()
         stats = self._position_mgr.get_portfolio_stats()
+
+    def _is_symbol_held_by_any_pod(self, symbol: str) -> bool:
+        """Check all state files on the shared PVC for a symbol held by any pod."""
+        try:
+            for state_path in STATE_DIR.glob("state-*.json"):
+                if state_path == self._state_file:
+                    continue  # Skip our own state file
+                try:
+                    with open(state_path) as f:
+                        state = json.load(f)
+                    positions = state.get("positions", {}).get("positions", {})
+                    if symbol in positions:
+                        status = positions[symbol].get("status", "open")
+                        if status == "open":
+                            logger.debug(
+                                "tokenomics.symbol_held_by_other",
+                                symbol=symbol,
+                                state_file=state_path.name,
+                            )
+                            return True
+                except (json.JSONDecodeError, OSError):
+                    continue  # Skip corrupt or locked files
+        except OSError:
+            pass  # STATE_DIR doesn't exist yet
+        return False
         logger.info("tokenomics.final_stats", **stats)
         logger.info("tokenomics.stopped")
 
     def _persist_state(self) -> None:
         """Save all state to disk."""
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
 
         state = {
             "version": 1,
@@ -379,16 +445,16 @@ class TokenomicsEngine:
         }
 
         # Write atomically (write to temp, then rename)
-        tmp_path = STATE_FILE.with_suffix(".tmp")
+        tmp_path = self._state_file.with_suffix(".tmp")
         with open(tmp_path, "w") as f:
             json.dump(state, f, indent=2, default=str)
-        tmp_path.rename(STATE_FILE)
+        tmp_path.rename(self._state_file)
 
     def _restore_state(self) -> None:
         """Load state from disk if available, then reconcile with broker."""
-        if STATE_FILE.exists():
+        if self._state_file.exists():
             try:
-                with open(STATE_FILE) as f:
+                with open(self._state_file) as f:
                     state = json.load(f)
 
                 self._position_mgr.restore_from_state(state.get("positions", {}))
@@ -406,7 +472,7 @@ class TokenomicsEngine:
             except Exception as e:
                 logger.error("tokenomics.state_restore_failed", error=str(e))
         else:
-            logger.info("tokenomics.no_state_file", path=str(STATE_FILE))
+            logger.info("tokenomics.no_state_file", path=str(self._state_file))
 
         # Always reconcile with broker — adopts untracked positions
         try:

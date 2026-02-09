@@ -86,6 +86,7 @@ class Secrets(BaseSettings):
     gemini_api_key: str
     finnhub_api_key: str = ""
     perplexity_api_key: str = ""
+    marketaux_api_key: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

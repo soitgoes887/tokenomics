@@ -34,36 +34,63 @@ class AlpacaNewsProvider(NewsProvider):
         """Fetch articles newer than last fetch time. Returns only unseen articles."""
         try:
             request = self._build_request()
-            response = self._client.get_news(request)
+            logger.debug(
+                "news.polling",
+                provider="alpaca",
+                symbols_configured=len(self._config.symbols),
+                symbols_in_request="all" if not self._config.symbols or len(self._config.symbols) > 50 else len(self._config.symbols),
+                since=str(request.start) if request.start else "none",
+            )
 
+            response = self._client.get_news(request)
+            raw_articles = response.data.get("news", [])
+
+            already_seen = 0
+            no_symbols = 0
+            contentless = 0
             articles = []
-            for raw in response.data.get("news", []):
+            for raw in raw_articles:
                 if str(raw.id) in self._seen_ids:
+                    already_seen += 1
                     continue
 
-                # Skip articles with no content if configured
                 if self._config.exclude_contentless and not raw.summary:
+                    contentless += 1
                     continue
 
                 article = self._normalize_article(raw)
-                if article.symbols:  # Only process articles mentioning specific stocks
+                if article.symbols:
                     articles.append(article)
                     self._seen_ids.add(article.id)
+                    logger.debug(
+                        "news.article_relevant",
+                        provider="alpaca",
+                        article_id=article.id,
+                        headline=article.headline[:80],
+                        symbols=article.symbols,
+                        source=article.source,
+                    )
+                else:
+                    no_symbols += 1
 
             self._last_fetch_time = datetime.now(timezone.utc)
             self._prune_seen_ids()
 
-            if articles:
-                logger.info(
-                    "news.fetched",
-                    new_count=len(articles),
-                    total_seen=len(self._seen_ids),
-                )
+            logger.info(
+                "news.poll_complete",
+                provider="alpaca",
+                raw_count=len(raw_articles),
+                already_seen=already_seen,
+                no_symbols=no_symbols,
+                contentless=contentless,
+                new_relevant=len(articles),
+                total_seen=len(self._seen_ids),
+            )
 
             return articles
 
         except Exception as e:
-            logger.error("news.fetch_failed", error=str(e))
+            logger.error("news.fetch_failed", provider="alpaca", error=str(e))
             raise NewsFetchError(f"Failed to fetch news: {e}") from e
 
     def _build_request(self) -> NewsRequest:
