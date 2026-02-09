@@ -6,7 +6,8 @@ config:
 
 
       {"news": "alpaca", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
-      {"news": "finnhub", "llm": "perplexity-sonar", "broker": "alpaca-paper"}
+      {"news": "finnhub", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
+      {"news": "marketaux", "llm": "perplexity-sonar", "broker": "alpaca-paper"}
     ]
 
   tokenomics:alpaca_api_key:
