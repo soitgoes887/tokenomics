@@ -78,8 +78,8 @@ class AlpacaNewsProvider(NewsProvider):
                 minutes=self._config.lookback_minutes
             )
 
-        if self._config.symbols:
-            kwargs["symbols"] = self._config.symbols
+        if self._config.symbols and len(self._config.symbols) <= 50:
+            kwargs["symbols"] = ",".join(self._config.symbols)
 
         if self._config.include_content:
             kwargs["include_content"] = True
