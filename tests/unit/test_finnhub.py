@@ -18,9 +18,8 @@ class TestFinnhubNewsProvider:
             return p
 
     def test_fetch_company_news(self, provider):
-        """Should return normalized articles from Finnhub."""
-        provider._config.symbols = ["AAPL"]
-        provider._client.company_news.return_value = [
+        """Should return articles with related symbols from general news."""
+        provider._client.general_news.return_value = [
             {
                 "id": 12345,
                 "headline": "Apple beats Q1 earnings",
@@ -77,7 +76,7 @@ class TestFinnhubNewsProvider:
         assert len(provider.fetch_new_articles()) == 0
 
     def test_skip_no_symbols(self, provider):
-        """Should skip articles with no related symbols."""
+        """Should skip articles with no related symbols and no recognized tickers."""
         provider._config.symbols = []
         provider._client.general_news.return_value = [
             {
@@ -93,6 +92,30 @@ class TestFinnhubNewsProvider:
 
         articles = provider.fetch_new_articles()
         assert len(articles) == 0
+
+    def test_extract_symbols_from_headline(self, test_config, mock_secrets):
+        """Should extract known symbols from headline when related field is empty."""
+        mock_secrets.finnhub_api_key = "test-finnhub-key"
+        test_config.news.symbols = ["AAPL", "TSLA", "NVDA"]
+        with patch("tokenomics.news.finnhub.finnhub") as mock_finnhub:
+            p = FinnhubNewsProvider(test_config, mock_secrets)
+            p._client = MagicMock()
+
+        p._client.general_news.return_value = [
+            {
+                "id": 333,
+                "headline": "NVDA surges after earnings beat expectations",
+                "summary": "Nvidia reported strong data center revenue",
+                "related": "",
+                "source": "test",
+                "url": "https://example.com",
+                "datetime": 1738886400,
+            },
+        ]
+
+        articles = p.fetch_new_articles()
+        assert len(articles) == 1
+        assert "NVDA" in articles[0].symbols
 
     def test_seen_ids_persistence(self, provider):
         """Should save and restore seen IDs."""

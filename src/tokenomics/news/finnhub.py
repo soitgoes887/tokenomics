@@ -1,5 +1,6 @@
 """Finnhub News API polling with deduplication."""
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import finnhub
@@ -22,31 +23,26 @@ class FinnhubNewsProvider(NewsProvider):
         self._seen_ids: set[str] = set()
         self._max_seen_ids = 10_000
         self._last_fetch_time: datetime | None = None
+        # Build lookup set for symbol extraction from headlines
+        self._symbol_set: set[str] = set(self._config.symbols) if self._config.symbols else set()
+        # Pre-compile word boundary regex for each symbol (min 2 chars to avoid noise)
+        self._symbol_pattern: re.Pattern | None = None
+        if self._symbol_set:
+            # Only match symbols that are 2+ characters to avoid false positives
+            valid = sorted([s for s in self._symbol_set if len(s) >= 2], key=len, reverse=True)
+            if valid:
+                escaped = [re.escape(s) for s in valid]
+                self._symbol_pattern = re.compile(
+                    r'\b(' + '|'.join(escaped) + r')\b'
+                )
 
     def fetch_new_articles(self) -> list[NewsArticle]:
         """Fetch articles from Finnhub. Returns only unseen articles."""
         try:
             now = datetime.now(timezone.utc)
 
-            if self._last_fetch_time:
-                from_date = self._last_fetch_time.strftime("%Y-%m-%d")
-            else:
-                from_date = (
-                    now - timedelta(minutes=self._config.lookback_minutes)
-                ).strftime("%Y-%m-%d")
-
-            to_date = now.strftime("%Y-%m-%d")
-
-            if self._config.symbols:
-                # Fetch news per symbol
-                raw_articles = []
-                for symbol in self._config.symbols:
-                    raw_articles.extend(
-                        self._client.company_news(symbol, _from=from_date, to=to_date)
-                    )
-            else:
-                # Fetch general market news
-                raw_articles = self._client.general_news("general", min_id=0)
+            # Always use general_news (single API call) and match symbols from text
+            raw_articles = self._client.general_news("general", min_id=0)
 
             articles = []
             for raw in raw_articles:
@@ -80,11 +76,23 @@ class FinnhubNewsProvider(NewsProvider):
             logger.error("news.fetch_failed", provider="finnhub", error=str(e))
             raise NewsFetchError(f"Failed to fetch Finnhub news: {e}") from e
 
+    def _extract_symbols_from_text(self, text: str) -> list[str]:
+        """Extract known S&P 500 symbols mentioned in text."""
+        if not self._symbol_pattern:
+            return []
+        return list(set(self._symbol_pattern.findall(text)))
+
     def _normalize_article(self, raw: dict) -> NewsArticle:
         """Convert Finnhub news dict to our domain model."""
         # Finnhub uses 'related' field for symbols (e.g. "AAPL,MSFT")
         related = raw.get("related", "")
         symbols = [s.strip() for s in related.split(",") if s.strip()] if related else []
+
+        # If no symbols from 'related' field, extract from headline/summary
+        if not symbols and self._symbol_set:
+            headline = raw.get("headline", "")
+            summary = raw.get("summary", "")
+            symbols = self._extract_symbols_from_text(f"{headline} {summary}")
 
         # Finnhub datetime is a UNIX timestamp
         ts = raw.get("datetime", 0)

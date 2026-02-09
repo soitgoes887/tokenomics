@@ -108,6 +108,7 @@ class TokenomicsEngine:
                 return
 
             if not articles:
+                logger.debug("tokenomics.no_new_articles", tick=self._tick_count)
                 return
 
             logger.info("tokenomics.processing_articles", count=len(articles))
