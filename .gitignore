@@ -3,6 +3,7 @@
 .venv/
 venv/
 env/
+phase*
 
 # Python
 __pycache__/

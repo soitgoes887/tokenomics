@@ -76,7 +76,7 @@ class Position(BaseModel):
     quantity: float
     position_size_usd: float
     entry_date: datetime
-    signal: TradeSignal
+    signal: Optional[TradeSignal] = None
     stop_loss_price: float
     take_profit_price: float
     max_hold_date: datetime

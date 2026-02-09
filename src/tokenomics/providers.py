@@ -12,6 +12,7 @@ NEWS_PROVIDERS = {
 
 LLM_PROVIDERS = {
     "gemini-flash": "tokenomics.analysis.sentiment:GeminiLLMProvider",
+    "perplexity-sonar": "tokenomics.analysis.perplexity:PerplexityLLMProvider",
 }
 
 BROKER_PROVIDERS = {

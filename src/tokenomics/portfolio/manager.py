@@ -147,16 +147,15 @@ class PositionManager:
         return list(self._positions.values())
 
     def reconcile_with_broker(self) -> list[str]:
-        """Compare local state with Alpaca positions. Returns warnings."""
+        """Compare local state with Alpaca positions. Adopts untracked positions. Returns warnings."""
         warnings = []
         try:
-            broker_positions = {
-                p["symbol"]: p for p in self._broker.get_open_positions()
-            }
+            broker_positions = self._broker.get_open_positions()
+            broker_map = {p["symbol"]: p for p in broker_positions}
 
             # Check for positions we track but Alpaca doesn't have
             for symbol in list(self._positions.keys()):
-                if symbol not in broker_positions:
+                if symbol not in broker_map:
                     warnings.append(
                         f"Local position {symbol} not found in Alpaca"
                     )
@@ -164,14 +163,16 @@ class PositionManager:
                         "reconcile.missing_in_broker", symbol=symbol
                     )
 
-            # Check for positions Alpaca has but we don't track
-            for symbol in broker_positions:
-                if symbol not in self._positions:
+            # Adopt positions Alpaca has but we don't track
+            untracked = [
+                bp for bp in broker_positions
+                if bp["symbol"] not in self._positions
+            ]
+            if untracked:
+                adopted = self.adopt_broker_positions(untracked)
+                for symbol in adopted:
                     warnings.append(
-                        f"Alpaca position {symbol} not tracked locally"
-                    )
-                    logger.warning(
-                        "reconcile.missing_locally", symbol=symbol
+                        f"Adopted Alpaca position {symbol} into local tracking"
                     )
 
         except Exception as e:
@@ -179,6 +180,56 @@ class PositionManager:
             logger.error("reconcile.failed", error=str(e))
 
         return warnings
+
+    def adopt_broker_positions(self, broker_positions: list[dict]) -> list[str]:
+        """Adopt positions from broker that are not tracked locally. Returns adopted symbols."""
+        adopted = []
+        now = datetime.now(timezone.utc)
+        max_hold_date = now + timedelta(weeks=13)
+
+        for bp in broker_positions:
+            symbol = bp["symbol"]
+            if symbol in self._positions:
+                continue
+
+            entry_price = bp["avg_entry_price"]
+            quantity = bp["qty"]
+
+            position = Position(
+                symbol=symbol,
+                alpaca_order_id="adopted",
+                entry_price=entry_price,
+                quantity=quantity,
+                position_size_usd=entry_price * quantity,
+                entry_date=now,
+                signal=None,
+                stop_loss_price=entry_price * (1 - self._config.risk.stop_loss_pct),
+                take_profit_price=entry_price * (1 + self._config.risk.take_profit_pct),
+                max_hold_date=max_hold_date,
+            )
+
+            self._positions[symbol] = position
+            adopted.append(symbol)
+
+            self._trade_log.info(
+                "trade.adopted",
+                symbol=symbol,
+                entry_price=entry_price,
+                quantity=quantity,
+                position_size=position.position_size_usd,
+                stop_loss=position.stop_loss_price,
+                take_profit=position.take_profit_price,
+                max_hold_date=max_hold_date.isoformat(),
+            )
+
+        if adopted:
+            logger.info(
+                "positions.adopted_from_broker",
+                count=len(adopted),
+                symbols=adopted,
+            )
+
+        return adopted
 
     def get_portfolio_stats(self) -> dict:
         """Calculate aggregate portfolio statistics."""

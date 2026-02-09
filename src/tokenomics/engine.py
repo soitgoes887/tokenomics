@@ -53,14 +53,8 @@ class TokenomicsEngine:
 
         self._running = True
         self._register_signal_handlers()
+        self._preflight_checks()
         self._restore_state()
-
-        # Log initial account state
-        try:
-            account = self._broker.get_account()
-            logger.info("tokenomics.account", **account)
-        except Exception as e:
-            logger.error("tokenomics.account_check_failed", error=str(e))
 
         try:
             while self._running:
@@ -270,6 +264,95 @@ class TokenomicsEngine:
         for sig in (signal_mod.SIGINT, signal_mod.SIGTERM):
             loop.add_signal_handler(sig, self._request_shutdown)
 
+    def _preflight_checks(self) -> None:
+        """Test all provider API connections before entering the main loop."""
+        logger.info("tokenomics.preflight_starting")
+        all_ok = True
+
+        # Broker check
+        try:
+            account = self._broker.get_account()
+            clock = self._broker.get_clock()
+            logger.info(
+                "preflight.broker_ok",
+                provider=self._config.providers.broker,
+                status=account["status"],
+                equity=account["equity"],
+                cash=account["cash"],
+                buying_power=account["buying_power"],
+                market_open=clock["is_open"],
+            )
+        except Exception as e:
+            logger.error(
+                "preflight.broker_failed",
+                provider=self._config.providers.broker,
+                error=str(e),
+            )
+            all_ok = False
+
+        # News provider check
+        try:
+            articles = self._fetcher.fetch_new_articles()
+            logger.info(
+                "preflight.news_ok",
+                provider=self._config.providers.news,
+                articles_available=len(articles),
+            )
+        except Exception as e:
+            logger.error(
+                "preflight.news_failed",
+                provider=self._config.providers.news,
+                error=str(e),
+            )
+            all_ok = False
+
+        # LLM provider check — send a minimal test prompt
+        try:
+            from tokenomics.models import NewsArticle
+
+            test_article = NewsArticle(
+                id="preflight-test",
+                headline="Test connectivity",
+                summary="This is a preflight connectivity test.",
+                symbols=["TEST"],
+                source="preflight",
+                url="",
+                created_at=datetime.now(timezone.utc),
+            )
+            result = self._analyzer.analyze(test_article, "TEST")
+            if result is not None:
+                logger.info(
+                    "preflight.llm_ok",
+                    provider=self._config.providers.llm,
+                    model=self._config.sentiment.model,
+                    test_sentiment=result.sentiment.value,
+                    test_conviction=result.conviction,
+                )
+            else:
+                logger.warning(
+                    "preflight.llm_parse_failed",
+                    provider=self._config.providers.llm,
+                    model=self._config.sentiment.model,
+                    msg="API responded but result could not be parsed",
+                )
+        except Exception as e:
+            logger.error(
+                "preflight.llm_failed",
+                provider=self._config.providers.llm,
+                model=self._config.sentiment.model,
+                error=str(e),
+            )
+            all_ok = False
+
+        if all_ok:
+            logger.info("tokenomics.preflight_passed")
+        else:
+            logger.error(
+                "tokenomics.preflight_failed",
+                msg="One or more providers failed connectivity checks. "
+                "The engine will start but may not function correctly.",
+            )
+
     def _request_shutdown(self) -> None:
         """Signal the main loop to stop."""
         logger.info("tokenomics.shutdown_requested")
@@ -302,31 +385,33 @@ class TokenomicsEngine:
         tmp_path.rename(STATE_FILE)
 
     def _restore_state(self) -> None:
-        """Load state from disk if available."""
-        if not STATE_FILE.exists():
+        """Load state from disk if available, then reconcile with broker."""
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE) as f:
+                    state = json.load(f)
+
+                self._position_mgr.restore_from_state(state.get("positions", {}))
+                self._risk_mgr.restore_from_state(state.get("risk", {}))
+                self._fetcher.restore_seen_ids(
+                    set(state.get("seen_article_ids", []))
+                )
+
+                logger.info(
+                    "tokenomics.state_restored",
+                    last_saved=state.get("last_saved"),
+                    open_positions=self._position_mgr.get_open_count(),
+                )
+
+            except Exception as e:
+                logger.error("tokenomics.state_restore_failed", error=str(e))
+        else:
             logger.info("tokenomics.no_state_file", path=str(STATE_FILE))
-            return
 
+        # Always reconcile with broker — adopts untracked positions
         try:
-            with open(STATE_FILE) as f:
-                state = json.load(f)
-
-            self._position_mgr.restore_from_state(state.get("positions", {}))
-            self._risk_mgr.restore_from_state(state.get("risk", {}))
-            self._fetcher.restore_seen_ids(
-                set(state.get("seen_article_ids", []))
-            )
-
-            logger.info(
-                "tokenomics.state_restored",
-                last_saved=state.get("last_saved"),
-                open_positions=self._position_mgr.get_open_count(),
-            )
-
-            # Reconcile with broker after restore
             warnings = self._position_mgr.reconcile_with_broker()
             for w in warnings:
                 logger.warning("tokenomics.restore_reconciliation", msg=w)
-
         except Exception as e:
-            logger.error("tokenomics.state_restore_failed", error=str(e))
+            logger.error("tokenomics.broker_reconciliation_failed", error=str(e))

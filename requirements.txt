@@ -5,6 +5,7 @@ finnhub-python>=2.4.0
 
 # LLM (google-generativeai is deprecated since Nov 2025)
 google-genai>=1.60.0,<2.0
+openai>=1.0,<2.0
 
 # Configuration
 pyyaml>=6.0
