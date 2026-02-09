@@ -127,21 +127,6 @@ secret = k8s.core.v1.Secret(
     },
 )
 
-# Shared PVC for state (all profiles read/write their own state file here)
-pvc = k8s.core.v1.PersistentVolumeClaim(
-    "tokenomics-data",
-    metadata=k8s.meta.v1.ObjectMetaArgs(
-        name="tokenomics-data",
-        namespace=namespace.metadata.name,
-    ),
-    spec=k8s.core.v1.PersistentVolumeClaimSpecArgs(
-        access_modes=["ReadWriteMany"],
-        resources=k8s.core.v1.VolumeResourceRequirementsArgs(
-            requests={"storage": "1Gi"},
-        ),
-    ),
-)
-
 # Create a deployment for each profile
 for profile in profiles:
     news = profile["news"]
@@ -198,6 +183,23 @@ sentiment:
             template=k8s.core.v1.PodTemplateSpecArgs(
                 metadata=k8s.meta.v1.ObjectMetaArgs(labels=app_labels),
                 spec=k8s.core.v1.PodSpecArgs(
+                    # Co-locate all tokenomics pods on the same node
+                    # so they share the hostPath volume for state files
+                    affinity=k8s.core.v1.AffinityArgs(
+                        pod_affinity=k8s.core.v1.PodAffinityArgs(
+                            preferred_during_scheduling_ignored_during_execution=[
+                                k8s.core.v1.WeightedPodAffinityTermArgs(
+                                    weight=100,
+                                    pod_affinity_term=k8s.core.v1.PodAffinityTermArgs(
+                                        label_selector=k8s.meta.v1.LabelSelectorArgs(
+                                            match_labels={"app": "tokenomics"},
+                                        ),
+                                        topology_key="kubernetes.io/hostname",
+                                    ),
+                                ),
+                            ],
+                        ),
+                    ),
                     containers=[
                         k8s.core.v1.ContainerArgs(
                             name="tokenomics",
@@ -239,8 +241,9 @@ sentiment:
                         ),
                         k8s.core.v1.VolumeArgs(
                             name="data",
-                            persistent_volume_claim=k8s.core.v1.PersistentVolumeClaimVolumeSourceArgs(
-                                claim_name=pvc.metadata.name,
+                            host_path=k8s.core.v1.HostPathVolumeSourceArgs(
+                                path="/var/lib/tokenomics/data",
+                                type="DirectoryOrCreate",
                             ),
                         ),
                         k8s.core.v1.VolumeArgs(
