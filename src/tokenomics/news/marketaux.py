@@ -1,8 +1,8 @@
-"""MarketAux News API polling with deduplication."""
+"""MarketAux News API polling with deduplication and rate limiting."""
 
 from datetime import datetime, timedelta, timezone
 
-import httpx
+import requests
 import structlog
 
 from tokenomics.config import AppConfig, Secrets
@@ -14,9 +14,20 @@ logger = structlog.get_logger(__name__)
 
 MARKETAUX_BASE_URL = "https://api.marketaux.com/v1/news/all"
 
+# US market hours in UTC (ET + 5 during EST, ET + 4 during EDT)
+# Conservative: 13:30 - 20:00 UTC covers EST market hours
+MARKET_OPEN_UTC_HOUR = 13
+MARKET_OPEN_UTC_MINUTE = 30
+MARKET_CLOSE_UTC_HOUR = 20
+MARKET_CLOSE_UTC_MINUTE = 0
+
+# 100 calls/day budget spread across ~6.5 market hours = ~1 call every 4 minutes
+DAILY_CALL_LIMIT = 100
+MIN_POLL_INTERVAL_SECONDS = 240  # 4 minutes between calls
+
 
 class MarketauxNewsProvider(NewsProvider):
-    """Polls MarketAux News API and yields unseen articles."""
+    """Polls MarketAux News API with rate limiting (100 calls/day, market hours only)."""
 
     def __init__(self, config: AppConfig, secrets: Secrets):
         if not secrets.marketaux_api_key:
@@ -26,27 +37,84 @@ class MarketauxNewsProvider(NewsProvider):
             )
         self._config = config.news
         self._api_key = secrets.marketaux_api_key
-        self._http = httpx.Client(timeout=30)
+        self._session = requests.Session()
         self._seen_ids: set[str] = set()
         self._max_seen_ids = 10_000
         self._last_fetch_time: datetime | None = None
+        self._last_api_call: datetime | None = None
+        self._daily_call_count = 0
+        self._daily_call_date: str | None = None
         self._symbol_set: set[str] = set(self._config.symbols) if self._config.symbols else set()
 
     def fetch_new_articles(self) -> list[NewsArticle]:
-        """Fetch articles from MarketAux. Returns only unseen articles."""
+        """Fetch articles from MarketAux. Rate-limited to market hours, 100 calls/day."""
+        now = datetime.now(timezone.utc)
+
+        # Reset daily counter at midnight UTC
+        today = now.strftime("%Y-%m-%d")
+        if self._daily_call_date != today:
+            self._daily_call_count = 0
+            self._daily_call_date = today
+
+        # Check daily limit
+        if self._daily_call_count >= DAILY_CALL_LIMIT:
+            logger.debug(
+                "news.rate_limited",
+                provider="marketaux",
+                reason="daily_limit_reached",
+                calls_today=self._daily_call_count,
+            )
+            return []
+
+        # Check market hours (skip outside 13:30-20:00 UTC)
+        market_open = now.replace(
+            hour=MARKET_OPEN_UTC_HOUR, minute=MARKET_OPEN_UTC_MINUTE, second=0
+        )
+        market_close = now.replace(
+            hour=MARKET_CLOSE_UTC_HOUR, minute=MARKET_CLOSE_UTC_MINUTE, second=0
+        )
+        if not (market_open <= now <= market_close):
+            # Allow one call outside market hours on first fetch (preflight)
+            if self._last_api_call is not None:
+                if now.weekday() < 5:  # Weekday
+                    logger.debug(
+                        "news.rate_limited",
+                        provider="marketaux",
+                        reason="outside_market_hours",
+                        current_utc=now.strftime("%H:%M"),
+                    )
+                return []
+
+        # Enforce minimum interval between calls
+        if self._last_api_call:
+            elapsed = (now - self._last_api_call).total_seconds()
+            if elapsed < MIN_POLL_INTERVAL_SECONDS:
+                logger.debug(
+                    "news.rate_limited",
+                    provider="marketaux",
+                    reason="min_interval",
+                    seconds_remaining=int(MIN_POLL_INTERVAL_SECONDS - elapsed),
+                )
+                return []
+
+        # Make the API call
         try:
             params = self._build_params()
 
             logger.debug(
                 "news.polling",
                 provider="marketaux",
-                symbols_in_request=len(self._config.symbols) if self._config.symbols else "all",
-                since=params.get("published_after", "none"),
+                call_number=self._daily_call_count + 1,
+                daily_limit=DAILY_CALL_LIMIT,
+                since=params.get("published_after", "first_fetch"),
             )
 
-            response = self._http.get(MARKETAUX_BASE_URL, params=params)
+            response = self._session.get(MARKETAUX_BASE_URL, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
+
+            self._last_api_call = now
+            self._daily_call_count += 1
 
             raw_articles = data.get("data", [])
 
@@ -83,7 +151,7 @@ class MarketauxNewsProvider(NewsProvider):
                 else:
                     no_symbols += 1
 
-            self._last_fetch_time = datetime.now(timezone.utc)
+            self._last_fetch_time = now
             self._prune_seen_ids()
 
             logger.info(
@@ -95,6 +163,7 @@ class MarketauxNewsProvider(NewsProvider):
                 contentless=contentless,
                 new_relevant=len(articles),
                 total_seen=len(self._seen_ids),
+                calls_today=self._daily_call_count,
             )
 
             return articles
@@ -112,34 +181,21 @@ class MarketauxNewsProvider(NewsProvider):
             "limit": 50,
         }
 
+        # Only apply time filter on subsequent polls, not the first fetch
         if self._last_fetch_time:
             params["published_after"] = self._last_fetch_time.strftime(
                 "%Y-%m-%dT%H:%M"
             )
-        else:
-            lookback = datetime.now(timezone.utc) - timedelta(
-                minutes=self._config.lookback_minutes
-            )
-            params["published_after"] = lookback.strftime("%Y-%m-%dT%H:%M")
-
-        # MarketAux supports comma-separated symbols in the request
-        if self._config.symbols:
-            # API may have URL length limits; batch symbols
-            # Send up to 100 symbols per request
-            symbols = self._config.symbols[:100]
-            params["symbols"] = ",".join(symbols)
 
         return params
 
     def _normalize_article(self, raw: dict) -> NewsArticle:
         """Convert MarketAux article to our domain model."""
-        # Extract symbols from entities array
         symbols = []
         for entity in raw.get("entities", []):
             symbol = entity.get("symbol")
             entity_type = entity.get("type", "")
             if symbol and entity_type in ("equity", ""):
-                # Filter to configured symbols if set
                 if not self._symbol_set or symbol in self._symbol_set:
                     symbols.append(symbol)
 
@@ -151,7 +207,6 @@ class MarketauxNewsProvider(NewsProvider):
                 seen.add(s)
                 unique_symbols.append(s)
 
-        # Parse published_at
         published_at = raw.get("published_at", "")
         try:
             created_at = datetime.fromisoformat(

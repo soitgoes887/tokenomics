@@ -12,13 +12,13 @@ class TestMarketauxNewsProvider:
     @pytest.fixture
     def provider(self, test_config, mock_secrets):
         mock_secrets.marketaux_api_key = "test-marketaux-key"
-        with patch("tokenomics.news.marketaux.httpx") as mock_httpx:
+        with patch("tokenomics.news.marketaux.requests") as mock_requests:
             p = MarketauxNewsProvider(test_config, mock_secrets)
-            p._http = MagicMock()
+            p._session = MagicMock()
             return p
 
     def _mock_response(self, articles):
-        """Create a mock httpx response."""
+        """Create a mock requests response."""
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"data": articles, "meta": {"found": len(articles)}}
         mock_resp.raise_for_status = MagicMock()
@@ -26,7 +26,7 @@ class TestMarketauxNewsProvider:
 
     def test_fetch_new_articles(self, provider):
         """Should return normalized articles from MarketAux."""
-        provider._http.get.return_value = self._mock_response([
+        provider._session.get.return_value = self._mock_response([
             {
                 "uuid": "article-001",
                 "title": "Apple beats Q1 earnings expectations",
@@ -67,14 +67,14 @@ class TestMarketauxNewsProvider:
                 "entities": [{"symbol": "AAPL", "type": "equity"}],
             },
         ]
-        provider._http.get.return_value = self._mock_response(raw)
+        provider._session.get.return_value = self._mock_response(raw)
 
         assert len(provider.fetch_new_articles()) == 1
         assert len(provider.fetch_new_articles()) == 0
 
     def test_skip_no_symbols(self, provider):
         """Should skip articles with no entity symbols."""
-        provider._http.get.return_value = self._mock_response([
+        provider._session.get.return_value = self._mock_response([
             {
                 "uuid": "article-002",
                 "title": "General market news",
@@ -91,7 +91,7 @@ class TestMarketauxNewsProvider:
 
     def test_multiple_entities(self, provider):
         """Should extract multiple symbols from entities."""
-        provider._http.get.return_value = self._mock_response([
+        provider._session.get.return_value = self._mock_response([
             {
                 "uuid": "article-003",
                 "title": "Tech stocks rally",
