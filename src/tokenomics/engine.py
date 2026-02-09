@@ -8,14 +8,14 @@ from pathlib import Path
 
 import structlog
 
-from tokenomics.analysis.sentiment import SentimentAnalyzer
 from tokenomics.config import AppConfig, Secrets
 from tokenomics.logging_config import get_trade_logger
 from tokenomics.models import TradeAction
-from tokenomics.news.fetcher import NewsFetcher, NewsFetchError
+from tokenomics.news.fetcher import NewsFetchError
 from tokenomics.portfolio.manager import PositionManager
 from tokenomics.portfolio.risk import RiskManager
-from tokenomics.trading.broker import AlpacaBroker, OrderError
+from tokenomics.providers import create_broker_provider, create_llm_provider, create_news_provider
+from tokenomics.trading.broker import OrderError
 from tokenomics.trading.signals import SignalGenerator
 
 logger = structlog.get_logger(__name__)
@@ -29,9 +29,9 @@ class TokenomicsEngine:
     def __init__(self, config: AppConfig, secrets: Secrets):
         self._config = config
         self._secrets = secrets
-        self._broker = AlpacaBroker(config, secrets)
-        self._fetcher = NewsFetcher(config, secrets)
-        self._analyzer = SentimentAnalyzer(config, secrets)
+        self._broker = create_broker_provider(config, secrets)
+        self._fetcher = create_news_provider(config, secrets)
+        self._analyzer = create_llm_provider(config, secrets)
         self._signal_gen = SignalGenerator(config)
         self._position_mgr = PositionManager(config, self._broker)
         self._risk_mgr = RiskManager(config)
@@ -46,6 +46,9 @@ class TokenomicsEngine:
             strategy=self._config.strategy.name,
             paper=self._config.trading.paper,
             capital=self._config.strategy.capital_usd,
+            news_provider=self._config.providers.news,
+            llm_provider=self._config.providers.llm,
+            broker_provider=self._config.providers.broker,
         )
 
         self._running = True

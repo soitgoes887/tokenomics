@@ -5,14 +5,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tokenomics.models import Sentiment, TradeAction, TradeSignal
-from tokenomics.trading.broker import AlpacaBroker, OrderError
+from tokenomics.trading.broker import AlpacaBrokerProvider, OrderError
 
 
-class TestAlpacaBroker:
+class TestAlpacaBrokerProvider:
     @pytest.fixture
     def broker(self, test_config, mock_secrets):
         with patch("tokenomics.trading.broker.TradingClient") as MockClient:
-            b = AlpacaBroker(test_config, mock_secrets)
+            b = AlpacaBrokerProvider(test_config, mock_secrets)
             b._client = MagicMock()
             return b
 

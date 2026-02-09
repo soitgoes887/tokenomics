@@ -9,7 +9,7 @@ import structlog
 from tokenomics.config import AppConfig
 from tokenomics.logging_config import get_trade_logger
 from tokenomics.models import Position, TradeSignal
-from tokenomics.trading.broker import AlpacaBroker
+from tokenomics.trading.base import BrokerProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -17,7 +17,7 @@ logger = structlog.get_logger(__name__)
 class PositionManager:
     """Manages the lifecycle of all open positions."""
 
-    def __init__(self, config: AppConfig, broker: AlpacaBroker):
+    def __init__(self, config: AppConfig, broker: BrokerProvider):
         self._config = config
         self._broker = broker
         self._positions: dict[str, Position] = {}  # symbol -> Position

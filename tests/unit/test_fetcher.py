@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tokenomics.models import NewsArticle
-from tokenomics.news.fetcher import NewsFetcher
+from tokenomics.news.fetcher import AlpacaNewsProvider
 
 
 class MockNewsItem:
@@ -32,7 +32,7 @@ class TestNewsFetcher:
     @pytest.fixture
     def fetcher(self, test_config, mock_secrets):
         with patch("tokenomics.news.fetcher.NewsClient"):
-            return NewsFetcher(test_config, mock_secrets)
+            return AlpacaNewsProvider(test_config, mock_secrets)
 
     def test_fetch_new_articles(self, fetcher):
         """Should return normalized articles."""

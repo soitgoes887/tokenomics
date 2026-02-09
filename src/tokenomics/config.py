@@ -62,7 +62,14 @@ class LoggingConfig(BaseModel):
     backup_count: int = 5
 
 
+class ProvidersConfig(BaseModel):
+    news: str = "alpaca"
+    llm: str = "gemini-flash"
+    broker: str = "alpaca-paper"
+
+
 class AppConfig(BaseModel):
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     strategy: StrategyConfig
     sentiment: SentimentConfig
     risk: RiskConfig
@@ -77,6 +84,7 @@ class Secrets(BaseSettings):
     alpaca_api_key: str
     alpaca_secret_key: str
     gemini_api_key: str
+    finnhub_api_key: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

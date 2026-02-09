@@ -8,6 +8,7 @@ from alpaca.data.requests import NewsRequest
 
 from tokenomics.config import AppConfig, Secrets
 from tokenomics.models import NewsArticle
+from tokenomics.news.base import NewsProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -16,7 +17,7 @@ class NewsFetchError(Exception):
     """Raised when news fetching fails after retries."""
 
 
-class NewsFetcher:
+class AlpacaNewsProvider(NewsProvider):
     """Polls Alpaca News API and yields unseen articles."""
 
     def __init__(self, config: AppConfig, secrets: Secrets):
