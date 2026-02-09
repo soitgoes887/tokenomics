@@ -3,8 +3,8 @@ config:
   tokenomics:namespace: tokenomics
   tokenomics:profiles: >
     [
-      {"news": "alpaca", "llm": "gemini-flash", "broker": "alpaca-paper"},
-      {"news": "finnhub", "llm": "gemini-flash", "broker": "alpaca-paper"}
+      {"news": "alpaca", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
+      {"news": "finnhub", "llm": "perplexity-sonar", "broker": "alpaca-paper"}
     ]
   tokenomics:alpaca_api_key:
     secure: AAABAA4dCf/NpqvP/2isl0hhwuz2sUAC56TnPkJORZYJzWKOykx2EGCHWJY5NKEVOirqhKYHxwkjNA==

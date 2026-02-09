@@ -16,6 +16,12 @@ gemini_api_key = config.require_secret("gemini_api_key")
 finnhub_api_key = config.require_secret("finnhub_api_key")
 perplexity_api_key = config.require_secret("perplexity_api_key")
 
+# Default model for each LLM provider
+LLM_DEFAULT_MODELS = {
+    "gemini-flash": "gemini-2.5-flash-lite",
+    "perplexity-sonar": "sonar-pro",
+}
+
 # Default profiles — override in Pulumi.<stack>.yaml
 DEFAULT_PROFILES = [
     {"news": "alpaca", "llm": "gemini-flash", "broker": "alpaca-paper"},
@@ -33,12 +39,6 @@ strategy:
   position_size_max_usd: 1000
   max_open_positions: 10
   target_new_positions_per_month: 15
-
-sentiment:
-  model: "gemini-2.5-flash-lite"
-  min_conviction: 70
-  temperature: 0.1
-  max_output_tokens: 512
 
 risk:
   stop_loss_pct: 0.025
@@ -133,11 +133,28 @@ for profile in profiles:
 
     deploy_name = f"tokenomics-{news}-{llm}-{broker}"
 
+    # Resolve the LLM model name: profile can override, otherwise use default for provider
+    llm_model = profile.get("model", LLM_DEFAULT_MODELS.get(llm, "sonar-pro"))
+
     settings_yaml = f"""\
 providers:
   news: {news}
   llm: {llm}
   broker: {broker}
+
+strategy:
+  name: "news-sentiment-satellite"
+  capital_usd: 10000
+  position_size_min_usd: 500
+  position_size_max_usd: 1000
+  max_open_positions: 10
+  target_new_positions_per_month: 15
+
+sentiment:
+  model: "{llm_model}"
+  min_conviction: 70
+  temperature: 0.1
+  max_output_tokens: 512
 
 {BASE_SETTINGS}"""
 
