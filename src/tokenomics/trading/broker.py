@@ -1,5 +1,7 @@
 """Alpaca broker interface for order execution and position queries."""
 
+import math
+
 import structlog
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -30,9 +32,11 @@ class AlpacaBrokerProvider(BrokerProvider):
 
     def __init__(self, config: AppConfig, secrets: Secrets):
         self._config = config.trading
+        self._api_key = secrets.alpaca_api_key
+        self._secret_key = secrets.alpaca_secret_key
         self._client = TradingClient(
-            api_key=secrets.alpaca_api_key,
-            secret_key=secrets.alpaca_secret_key,
+            api_key=self._api_key,
+            secret_key=self._secret_key,
             paper=config.trading.paper,
         )
 
@@ -42,7 +46,11 @@ class AlpacaBrokerProvider(BrokerProvider):
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     def submit_buy_order(self, signal: TradeSignal) -> str:
-        """Submit a market buy order. Returns the Alpaca order ID."""
+        """Submit a market buy order. Returns the Alpaca order ID.
+
+        Tries notional (dollar amount) order first. Falls back to whole-share
+        qty order if the asset is not fractionable.
+        """
         try:
             request = MarketOrderRequest(
                 symbol=signal.symbol,
@@ -63,6 +71,65 @@ class AlpacaBrokerProvider(BrokerProvider):
 
             return str(order.id)
 
+        except Exception as e:
+            if "not fractionable" in str(e):
+                return self._submit_whole_share_buy(signal)
+            logger.error(
+                "broker.order_failed",
+                symbol=signal.symbol,
+                error=str(e),
+            )
+            raise OrderError(f"Buy order failed for {signal.symbol}: {e}") from e
+
+    def _submit_whole_share_buy(self, signal: TradeSignal) -> str:
+        """Fall back to whole-share buy when asset is not fractionable."""
+        try:
+            position = self.get_position(signal.symbol)
+            if position:
+                price = position["current_price"]
+            else:
+                # Use latest trade to get current price
+                from alpaca.data.requests import StockLatestTradeRequest
+                from alpaca.data.historical import StockHistoricalDataClient
+
+                data_client = StockHistoricalDataClient(
+                    api_key=self._api_key,
+                    secret_key=self._secret_key,
+                )
+                trade = data_client.get_stock_latest_trade(
+                    StockLatestTradeRequest(symbol_or_symbols=signal.symbol)
+                )
+                price = float(trade[signal.symbol].price)
+
+            qty = math.floor(signal.position_size_usd / price)
+            if qty < 1:
+                raise OrderError(
+                    f"Cannot buy {signal.symbol}: price ${price:.2f} exceeds "
+                    f"position size ${signal.position_size_usd:.2f}"
+                )
+
+            request = MarketOrderRequest(
+                symbol=signal.symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=self._time_in_force(signal.symbol),
+            )
+
+            order = self._client.submit_order(request)
+
+            logger.info(
+                "broker.order_submitted",
+                order_id=str(order.id),
+                symbol=signal.symbol,
+                qty=qty,
+                side="BUY",
+                fallback="whole_share",
+            )
+
+            return str(order.id)
+
+        except OrderError:
+            raise
         except Exception as e:
             logger.error(
                 "broker.order_failed",
