@@ -7,3 +7,5 @@ config:
     secure: AAABAEAzUQObXwTT4stq607bFvRHgr/n68XMeIxKaMDcYly9Rg0YdMI0pugmsIbzCbWk/Nz/N5SE6oABkwd9hVrNlEQQZkfzKVuqDg==
   tokenomics:gemini_api_key:
     secure: AAABAK1oKlTu3/kkJAD9jZa2eKj2rM47/QX0O/ATWjViT+IFQwdJOLvV4Nb7+U0VIutC8CkNpCwX/mjANHjn9H9xYGKCQ6I=
+  tokenomics:finnhub_api_key:
+    secure: AAABAGUzIUunXc925r7w8za+d3l0qZRk/OSCSkWZa/rTcMlJMGhNjHHM8DVS4Oa9ZWeT2k+JF3MC1HuC3B3YcSMNkVwT5b7m
