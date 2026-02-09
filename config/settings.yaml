@@ -38,7 +38,7 @@ trading:
   time_in_force: "day"
 
 logging:
-  level: "DEBUG"
+  level: "INFO"
   trade_log: "logs/trades.log"
   decision_log: "logs/decisions.log"
   app_log: "logs/tokenomics.log"

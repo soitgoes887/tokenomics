@@ -13,6 +13,7 @@ namespace_name = config.get("namespace") or "tokenomics"
 alpaca_api_key = config.require_secret("alpaca_api_key")
 alpaca_secret_key = config.require_secret("alpaca_secret_key")
 gemini_api_key = config.require_secret("gemini_api_key")
+finnhub_api_key = config.require_secret("finnhub_api_key")
 
 # Default profiles — override in Pulumi.<stack>.yaml
 DEFAULT_PROFILES = [
@@ -84,6 +85,7 @@ secret = k8s.core.v1.Secret(
         "ALPACA_API_KEY": alpaca_api_key,
         "ALPACA_SECRET_KEY": alpaca_secret_key,
         "GEMINI_API_KEY": gemini_api_key,
+        "FINNHUB_API_KEY": finnhub_api_key,
     },
 )
 

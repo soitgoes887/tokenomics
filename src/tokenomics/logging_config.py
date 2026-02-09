@@ -52,6 +52,10 @@ def configure_logging(config: LoggingConfig) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, config.level.upper()))
 
+    # Silence noisy third-party loggers that may leak secrets in URLs
+    for noisy_logger in ["urllib3", "httpcore", "httpx", "google_genai"]:
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
     # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(console_formatter)
