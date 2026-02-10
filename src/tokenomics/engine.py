@@ -1,12 +1,11 @@
 """Main event loop orchestrating the news sentiment trading system."""
 
 import asyncio
-import glob
-import json
+import os
 import signal as signal_mod
 from datetime import datetime, timezone
-from pathlib import Path
 
+import redis
 import structlog
 
 from tokenomics.config import AppConfig, Secrets
@@ -16,12 +15,11 @@ from tokenomics.news.fetcher import NewsFetchError
 from tokenomics.portfolio.manager import PositionManager
 from tokenomics.portfolio.risk import RiskManager
 from tokenomics.providers import create_broker_provider, create_llm_provider, create_news_provider
+from tokenomics.state.redis_backend import RedisStateBackend
 from tokenomics.trading.broker import OrderError
 from tokenomics.trading.signals import SignalGenerator
 
 logger = structlog.get_logger(__name__)
-
-STATE_DIR = Path("data")
 
 
 class TokenomicsEngine:
@@ -40,9 +38,9 @@ class TokenomicsEngine:
         self._running = False
         self._tick_count = 0
 
-        # Per-profile state file so multiple pods don't clobber each other
+        # Redis state backend (per-profile isolation)
         profile_id = f"{config.providers.news}-{config.providers.llm}-{config.providers.broker}"
-        self._state_file = STATE_DIR / f"state-{profile_id}.json"
+        self._state_backend = RedisStateBackend(profile_id)
 
     async def start(self) -> None:
         """Start the engine. Runs until shutdown signal received."""
@@ -385,6 +383,46 @@ class TokenomicsEngine:
             )
             all_ok = False
 
+        # Redis check — verify connectivity and authentication
+        try:
+            redis_host = os.getenv("REDIS_HOST", "localhost")
+            redis_port = int(os.getenv("REDIS_PORT", "6379"))
+            redis_password = os.getenv("REDIS_PASSWORD")
+
+            redis_client = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                password=redis_password,
+                decode_responses=True,
+                socket_connect_timeout=5,
+            )
+
+            # Test connection with PING
+            pong = redis_client.ping()
+
+            # Test write/read
+            test_key = "preflight:test"
+            redis_client.set(test_key, "ok", ex=10)
+            test_value = redis_client.get(test_key)
+            redis_client.delete(test_key)
+
+            logger.info(
+                "preflight.redis_ok",
+                host=redis_host,
+                port=redis_port,
+                ping=pong,
+                read_write="ok" if test_value == "ok" else "failed",
+            )
+            redis_client.close()
+        except Exception as e:
+            logger.error(
+                "preflight.redis_failed",
+                host=os.getenv("REDIS_HOST", "localhost"),
+                port=os.getenv("REDIS_PORT", "6379"),
+                error=str(e),
+            )
+            all_ok = False
+
         if all_ok:
             logger.info("tokenomics.preflight_passed")
         else:
@@ -404,59 +442,35 @@ class TokenomicsEngine:
         logger.info("tokenomics.shutting_down")
         self._persist_state()
         stats = self._position_mgr.get_portfolio_stats()
-
-    def _is_symbol_held_by_any_pod(self, symbol: str) -> bool:
-        """Check all state files on the shared PVC for a symbol held by any pod."""
-        try:
-            for state_path in STATE_DIR.glob("state-*.json"):
-                if state_path == self._state_file:
-                    continue  # Skip our own state file
-                try:
-                    with open(state_path) as f:
-                        state = json.load(f)
-                    positions = state.get("positions", {}).get("positions", {})
-                    if symbol in positions:
-                        status = positions[symbol].get("status", "open")
-                        if status == "open":
-                            logger.debug(
-                                "tokenomics.symbol_held_by_other",
-                                symbol=symbol,
-                                state_file=state_path.name,
-                            )
-                            return True
-                except (json.JSONDecodeError, OSError):
-                    continue  # Skip corrupt or locked files
-        except OSError:
-            pass  # STATE_DIR doesn't exist yet
-        return False
         logger.info("tokenomics.final_stats", **stats)
         logger.info("tokenomics.stopped")
+        self._state_backend.close()
+
+    def _is_symbol_held_by_any_pod(self, symbol: str) -> bool:
+        """Check Redis for a symbol held by any profile."""
+        return self._state_backend.is_symbol_held_by_any_profile(symbol)
 
     def _persist_state(self) -> None:
-        """Save all state to disk."""
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
-
-        state = {
-            "version": 1,
-            "last_saved": datetime.now(timezone.utc).isoformat(),
-            "positions": self._position_mgr.to_state_dict(),
-            "risk": self._risk_mgr.to_state_dict(),
-            "seen_article_ids": list(self._fetcher.get_seen_ids()),
-        }
-
-        # Write atomically (write to temp, then rename)
-        tmp_path = self._state_file.with_suffix(".tmp")
-        with open(tmp_path, "w") as f:
-            json.dump(state, f, indent=2, default=str)
-        tmp_path.rename(self._state_file)
+        """Save all state to Redis."""
+        try:
+            self._state_backend.save_state(
+                positions=self._position_mgr.to_state_dict(),
+                risk=self._risk_mgr.to_state_dict(),
+                seen_article_ids=list(self._fetcher.get_seen_ids()),
+            )
+        except Exception as e:
+            logger.error(
+                "tokenomics.state_persist_failed",
+                error=str(e),
+                exc_info=True,
+            )
 
     def _restore_state(self) -> None:
-        """Load state from disk if available, then reconcile with broker."""
-        if self._state_file.exists():
-            try:
-                with open(self._state_file) as f:
-                    state = json.load(f)
+        """Load state from Redis if available, then reconcile with broker."""
+        try:
+            state = self._state_backend.load_state()
 
+            if state:
                 self._position_mgr.restore_from_state(state.get("positions", {}))
                 self._risk_mgr.restore_from_state(state.get("risk", {}))
                 self._fetcher.restore_seen_ids(
@@ -468,11 +482,11 @@ class TokenomicsEngine:
                     last_saved=state.get("last_saved"),
                     open_positions=self._position_mgr.get_open_count(),
                 )
+            else:
+                logger.info("tokenomics.no_state_found")
 
-            except Exception as e:
-                logger.error("tokenomics.state_restore_failed", error=str(e))
-        else:
-            logger.info("tokenomics.no_state_file", path=str(self._state_file))
+        except Exception as e:
+            logger.error("tokenomics.state_restore_failed", error=str(e), exc_info=True)
 
         # Always reconcile with broker — adopts untracked positions
         try:
