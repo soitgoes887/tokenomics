@@ -110,6 +110,22 @@ namespace = k8s.core.v1.Namespace(
     metadata=k8s.meta.v1.ObjectMetaArgs(name=namespace_name),
 )
 
+# Get Redis secret from redis namespace and copy to tokenomics namespace
+redis_secret_data = k8s.core.v1.Secret.get(
+    "redis-secret-ref",
+    id="redis/redis-secret",
+)
+
+# Copy Redis secret to tokenomics namespace
+redis_secret_copy = k8s.core.v1.Secret(
+    "redis-secret-copy",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="redis-secret",
+        namespace=namespace.metadata.name,
+    ),
+    data=redis_secret_data.data,
+)
+
 # Shared secret (all profiles use the same API keys)
 secret = k8s.core.v1.Secret(
     "tokenomics-secrets",
@@ -204,6 +220,26 @@ sentiment:
                         k8s.core.v1.ContainerArgs(
                             name="tokenomics",
                             image=image,
+                            env=[
+                                # Redis configuration
+                                k8s.core.v1.EnvVarArgs(
+                                    name="REDIS_HOST",
+                                    value="redis.redis.svc.cluster.local",
+                                ),
+                                k8s.core.v1.EnvVarArgs(
+                                    name="REDIS_PORT",
+                                    value="6379",
+                                ),
+                                k8s.core.v1.EnvVarArgs(
+                                    name="REDIS_PASSWORD",
+                                    value_from=k8s.core.v1.EnvVarSourceArgs(
+                                        secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
+                                            name="redis-secret",
+                                            key="redis-password",
+                                        ),
+                                    ),
+                                ),
+                            ],
                             env_from=[
                                 k8s.core.v1.EnvFromSourceArgs(
                                     secret_ref=k8s.core.v1.SecretEnvSourceArgs(

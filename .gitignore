@@ -3,6 +3,7 @@
 .venv/
 venv/
 env/
+data/
 phase*
 
 # Python
