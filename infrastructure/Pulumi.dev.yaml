@@ -1,8 +1,9 @@
 config:
-  tokenomics:image: anicu/tokenomics:20260206-ea0f9b5
+  tokenomics:image: anicu/tokenomics:20260209-c92ff22
   tokenomics:namespace: tokenomics
   tokenomics:profiles: >
     [
+
 
 
       {"news": "alpaca", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
