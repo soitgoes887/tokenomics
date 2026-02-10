@@ -38,9 +38,12 @@ class TokenomicsEngine:
         self._running = False
         self._tick_count = 0
 
-        # Redis state backend (per-profile isolation)
+        # Redis state backend
+        # Positions and risk are SHARED across all profiles using the same broker
+        # Seen articles are profile-specific
         profile_id = f"{config.providers.news}-{config.providers.llm}-{config.providers.broker}"
-        self._state_backend = RedisStateBackend(profile_id)
+        broker_id = config.providers.broker
+        self._state_backend = RedisStateBackend(profile_id, broker_id)
 
     async def start(self) -> None:
         """Start the engine. Runs until shutdown signal received."""
@@ -191,12 +194,16 @@ class TokenomicsEngine:
         """Submit order and record position."""
         try:
             if signal.action == TradeAction.BUY:
-                # Check if any other pod already holds this symbol
-                if self._is_symbol_held_by_any_pod(signal.symbol):
+                # CRITICAL: Reload shared state from Redis to get latest positions
+                # from all profiles before making a trade decision
+                self._reload_shared_state()
+
+                # Check if we already hold this symbol (shared state check)
+                if self._position_mgr.get_position(signal.symbol) is not None:
                     logger.info(
                         "tokenomics.duplicate_prevented",
                         symbol=signal.symbol,
-                        msg="Another profile already holds this position",
+                        msg="Already hold position in this symbol (shared state)",
                     )
                     return
 
@@ -446,10 +453,6 @@ class TokenomicsEngine:
         logger.info("tokenomics.stopped")
         self._state_backend.close()
 
-    def _is_symbol_held_by_any_pod(self, symbol: str) -> bool:
-        """Check Redis for a symbol held by any profile."""
-        return self._state_backend.is_symbol_held_by_any_profile(symbol)
-
     def _persist_state(self) -> None:
         """Save all state to Redis."""
         try:
@@ -495,3 +498,34 @@ class TokenomicsEngine:
                 logger.warning("tokenomics.restore_reconciliation", msg=w)
         except Exception as e:
             logger.error("tokenomics.broker_reconciliation_failed", error=str(e))
+
+    def _reload_shared_state(self) -> None:
+        """
+        Reload ONLY shared state (positions + risk) from Redis.
+
+        Called before executing a BUY order to ensure we have the latest
+        positions from all profiles sharing the same broker account.
+
+        Does NOT reload profile-specific seen articles.
+        """
+        try:
+            state = self._state_backend.load_state()
+
+            if state:
+                # Only reload positions and risk (shared)
+                # Keep existing seen_article_ids (profile-specific)
+                self._position_mgr.restore_from_state(state.get("positions", {}))
+                self._risk_mgr.restore_from_state(state.get("risk", {}))
+
+                logger.debug(
+                    "tokenomics.shared_state_reloaded",
+                    open_positions=self._position_mgr.get_open_count(),
+                )
+
+        except Exception as e:
+            logger.error(
+                "tokenomics.shared_state_reload_failed",
+                error=str(e),
+                exc_info=True,
+            )
+
