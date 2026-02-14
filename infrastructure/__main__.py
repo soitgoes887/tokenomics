@@ -354,7 +354,7 @@ fundamentals_cronjob = k8s.batch.v1.CronJob(
                                     # Configuration
                                     k8s.core.v1.EnvVarArgs(
                                         name="FUNDAMENTALS_LIMIT",
-                                        value="1250",
+                                        value="1000",
                                     ),
                                     k8s.core.v1.EnvVarArgs(
                                         name="FUNDAMENTALS_BATCH_SIZE",
@@ -374,6 +374,88 @@ fundamentals_cronjob = k8s.batch.v1.CronJob(
     ),
 )
 
+# Universe refresh CronJob - runs monthly to update stock universe by market cap
+# This job fetches market cap for all US stocks and saves top N to Redis
+# The weekly fundamentals job then uses this list instead of alphabetical order
+universe_cronjob = k8s.batch.v1.CronJob(
+    "universe-refresh",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="universe-refresh",
+        namespace=namespace.metadata.name,
+    ),
+    spec=k8s.batch.v1.CronJobSpecArgs(
+        # Run on the 1st of each month at 1:00 AM UTC
+        schedule="0 1 1 * *",
+        concurrency_policy="Forbid",
+        successful_jobs_history_limit=2,
+        failed_jobs_history_limit=2,
+        job_template=k8s.batch.v1.JobTemplateSpecArgs(
+            spec=k8s.batch.v1.JobSpecArgs(
+                # Long TTL - job can take several hours
+                ttl_seconds_after_finished=172800,  # Clean up after 48 hours
+                backoff_limit=2,
+                # No deadline - job may take 5+ hours for 17k symbols
+                template=k8s.core.v1.PodTemplateSpecArgs(
+                    metadata=k8s.meta.v1.ObjectMetaArgs(
+                        labels={"app": "tokenomics", "component": "universe-refresh"},
+                    ),
+                    spec=k8s.core.v1.PodSpecArgs(
+                        restart_policy="OnFailure",
+                        containers=[
+                            k8s.core.v1.ContainerArgs(
+                                name="universe-refresh",
+                                image=image,
+                                command=["python", "-m", "tokenomics.fundamentals.universe_job"],
+                                env=[
+                                    # Redis configuration
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="REDIS_HOST",
+                                        value="redis.redis.svc.cluster.local",
+                                    ),
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="REDIS_PORT",
+                                        value="6379",
+                                    ),
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="REDIS_PASSWORD",
+                                        value_from=k8s.core.v1.EnvVarSourceArgs(
+                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
+                                                name="redis-secret",
+                                                key="redis-password",
+                                            ),
+                                        ),
+                                    ),
+                                    # Finnhub API key
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="FINNHUB_API_KEY",
+                                        value_from=k8s.core.v1.EnvVarSourceArgs(
+                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
+                                                name="tokenomics-secrets",
+                                                key="FINNHUB_API_KEY",
+                                            ),
+                                        ),
+                                    ),
+                                    # Configuration - how many top companies to track
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="UNIVERSE_SIZE",
+                                        value="1500",
+                                    ),
+                                ],
+                                resources=k8s.core.v1.ResourceRequirementsArgs(
+                                    # Higher limits - this job runs longer
+                                    requests={"cpu": "100m", "memory": "256Mi"},
+                                    limits={"cpu": "500m", "memory": "512Mi"},
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+
 pulumi.export("namespace", namespace.metadata.name)
 pulumi.export("profiles", [f"{p['news']}-{p['llm']}-{p['broker']}" for p in profiles])
 pulumi.export("fundamentals-cronjob", fundamentals_cronjob.metadata.name)
+pulumi.export("universe-cronjob", universe_cronjob.metadata.name)
