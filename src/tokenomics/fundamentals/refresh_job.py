@@ -27,8 +27,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
+from pydantic_settings import BaseSettings
 
-from tokenomics.config import Secrets
 from tokenomics.fundamentals import (
     FinancialsFetchError,
     FinnhubFinancialsProvider,
@@ -37,6 +37,14 @@ from tokenomics.fundamentals import (
 )
 from tokenomics.fundamentals.scorer import FundamentalsScore
 from tokenomics.models import BasicFinancials
+
+
+class FundamentalsSecrets(BaseSettings):
+    """Minimal secrets for fundamentals job - only requires Finnhub API key."""
+
+    finnhub_api_key: str
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 def setup_cronjob_logging() -> None:
@@ -222,8 +230,8 @@ def main() -> int:
     )
 
     try:
-        # Load configuration
-        secrets = Secrets()
+        # Load configuration - only need Finnhub API key for this job
+        secrets = FundamentalsSecrets()
         if not secrets.finnhub_api_key:
             print("ERROR: FINNHUB_API_KEY environment variable not set")
             logger.error("fundamentals_job.missing_finnhub_api_key")

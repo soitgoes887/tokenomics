@@ -3,15 +3,21 @@
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Protocol
 
 import finnhub
 import structlog
 
-from tokenomics.config import Secrets
 from tokenomics.fundamentals.base import FinancialsFetchError, FinancialsProvider
 from tokenomics.models import BasicFinancials, MetricDataPoint
 
 logger = structlog.get_logger(__name__)
+
+
+class HasFinnhubApiKey(Protocol):
+    """Protocol for any object with finnhub_api_key attribute."""
+
+    finnhub_api_key: str
 
 
 @dataclass
@@ -33,11 +39,11 @@ class FinnhubFinancialsProvider(FinancialsProvider):
     profitability metrics, growth rates, and financial health indicators.
     """
 
-    def __init__(self, secrets: Secrets):
+    def __init__(self, secrets: HasFinnhubApiKey):
         """Initialize the Finnhub financials provider.
 
         Args:
-            secrets: Application secrets containing finnhub_api_key.
+            secrets: Any object with finnhub_api_key attribute.
         """
         self._client = finnhub.Client(api_key=secrets.finnhub_api_key)
         self._max_retries = 3
