@@ -140,8 +140,9 @@ class BasicFinancials(BaseModel):
     # Financial health
     current_ratio: Optional[float] = Field(None, alias="currentRatioAnnual")
     quick_ratio: Optional[float] = Field(None, alias="quickRatioAnnual")
-    debt_to_equity: Optional[float] = Field(None, alias="totalDebtToEquityAnnual")
-    debt_to_assets: Optional[float] = Field(None, alias="totalDebtToTotalAssetsAnnual")
+    debt_to_equity: Optional[float] = Field(None, alias="totalDebt/totalEquityAnnual")
+    debt_to_assets: Optional[float] = Field(None, alias="totalDebt/totalAssetsAnnual")
+    long_term_debt_to_equity: Optional[float] = Field(None, alias="longTermDebt/equityAnnual")
     interest_coverage: Optional[float] = Field(None, alias="interestCoverageAnnual")
 
     # Per-share data

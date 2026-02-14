@@ -285,8 +285,9 @@ class FinnhubFinancialsProvider(FinancialsProvider):
             # Financial health
             "current_ratio": metric.get("currentRatioAnnual"),
             "quick_ratio": metric.get("quickRatioAnnual"),
-            "debt_to_equity": metric.get("totalDebtToEquityAnnual"),
-            "debt_to_assets": metric.get("totalDebtToTotalAssetsAnnual"),
+            "debt_to_equity": metric.get("totalDebt/totalEquityAnnual"),
+            "debt_to_assets": metric.get("totalDebt/totalAssetsAnnual"),
+            "long_term_debt_to_equity": metric.get("longTermDebt/equityAnnual"),
             "interest_coverage": metric.get("interestCoverageAnnual"),
             # Per-share
             "eps_ttm": metric.get("epsBasicExclExtraItemsTTM"),
