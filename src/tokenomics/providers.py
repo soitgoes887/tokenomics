@@ -2,14 +2,7 @@
 
 from tokenomics.analysis.base import LLMProvider
 from tokenomics.config import AppConfig, Secrets
-from tokenomics.news.base import NewsProvider
 from tokenomics.trading.base import BrokerProvider
-
-NEWS_PROVIDERS = {
-    "alpaca": "tokenomics.news.fetcher:AlpacaNewsProvider",
-    "finnhub": "tokenomics.news.finnhub:FinnhubNewsProvider",
-    "marketaux": "tokenomics.news.marketaux:MarketauxNewsProvider",
-}
 
 LLM_PROVIDERS = {
     "gemini-flash": "tokenomics.analysis.sentiment:GeminiLLMProvider",
@@ -29,17 +22,6 @@ def _import_class(path: str):
 
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
-
-
-def create_news_provider(config: AppConfig, secrets: Secrets) -> NewsProvider:
-    """Create a news provider based on config.providers.news."""
-    name = config.providers.news
-    if name not in NEWS_PROVIDERS:
-        raise ValueError(
-            f"Unknown news provider: '{name}'. Available: {list(NEWS_PROVIDERS.keys())}"
-        )
-    cls = _import_class(NEWS_PROVIDERS[name])
-    return cls(config, secrets)
 
 
 def create_llm_provider(config: AppConfig, secrets: Secrets) -> LLMProvider:
