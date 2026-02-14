@@ -139,6 +139,37 @@ class AlpacaBrokerProvider(BrokerProvider):
             raise OrderError(f"Buy order failed for {signal.symbol}: {e}") from e
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    def submit_buy_order_qty(self, symbol: str, quantity: int) -> str:
+        """Submit a market buy order by share quantity. Returns order ID."""
+        try:
+            request = MarketOrderRequest(
+                symbol=symbol,
+                qty=quantity,
+                side=OrderSide.BUY,
+                time_in_force=self._time_in_force(symbol),
+            )
+
+            order = self._client.submit_order(request)
+
+            logger.info(
+                "broker.order_submitted",
+                order_id=str(order.id),
+                symbol=symbol,
+                qty=quantity,
+                side="BUY",
+            )
+
+            return str(order.id)
+
+        except Exception as e:
+            logger.error(
+                "broker.order_failed",
+                symbol=symbol,
+                error=str(e),
+            )
+            raise OrderError(f"Buy order failed for {symbol}: {e}") from e
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     def submit_sell_order(self, symbol: str, quantity: float) -> str:
         """Submit a market sell order to close a position. Returns order ID."""
         try:

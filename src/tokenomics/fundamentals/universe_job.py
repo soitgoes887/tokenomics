@@ -160,7 +160,10 @@ def main() -> int:
         print(f"Fetching market cap for {len(all_symbols)} symbols...")
         print(f"  Rate limit: {rate_limit_delay}s between calls")
         print(f"  Estimated time: {len(all_symbols) / 60:.0f} minutes")
+        print(f"  Progress updates every 100 symbols (~100 seconds)")
         print("-" * 60)
+        print("  Starting... (first update in ~100 seconds)")
+        print()
 
         symbols_with_marketcap: list[tuple[str, float]] = []
         no_data_count = 0
