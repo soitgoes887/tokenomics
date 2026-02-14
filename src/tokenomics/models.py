@@ -133,6 +133,7 @@ class BasicFinancials(BaseModel):
     # Growth metrics
     revenue_growth_3y: Optional[float] = Field(None, alias="revenueGrowth3Y")
     revenue_growth_5y: Optional[float] = Field(None, alias="revenueGrowth5Y")
+    revenue_growth_ttm: Optional[float] = Field(None, alias="revenueGrowthTTMYoy")
     eps_growth_3y: Optional[float] = Field(None, alias="epsGrowth3Y")
     eps_growth_5y: Optional[float] = Field(None, alias="epsGrowth5Y")
     eps_growth_ttm: Optional[float] = Field(None, alias="epsGrowthTTMYoy")

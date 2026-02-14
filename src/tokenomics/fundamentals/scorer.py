@@ -82,11 +82,11 @@ class FundamentalsScorer:
         Returns:
             FundamentalsScore with composite and component scores
         """
-        # Extract raw values
+        # Extract raw values - prefer TTM (most current) over 3Y/5Y averages
         roe = financials.roe
         debt_to_equity = financials.debt_to_equity
-        revenue_growth = financials.revenue_growth_3y or financials.revenue_growth_5y
-        eps_growth = financials.eps_growth_3y or financials.eps_growth_5y
+        revenue_growth = financials.revenue_growth_ttm or financials.revenue_growth_3y or financials.revenue_growth_5y
+        eps_growth = financials.eps_growth_ttm or financials.eps_growth_3y or financials.eps_growth_5y
 
         # Calculate component scores
         roe_score = self._score_roe(roe)

@@ -269,25 +269,26 @@ class FinnhubFinancialsProvider(FinancialsProvider):
             "enterprise_value": metric.get("enterpriseValue"),
             "ev_to_ebitda": metric.get("evToEbitdAnnual"),
             "ev_to_revenue": metric.get("evToRevenue"),
-            # Profitability
+            # Profitability (prefer fiscal year/quarterly over TTM for accuracy)
             "gross_margin": metric.get("grossMarginTTM"),
             "operating_margin": metric.get("operatingMarginTTM"),
             "net_margin": metric.get("netProfitMarginTTM"),
-            "roe": metric.get("roeTTM"),
-            "roa": metric.get("roaTTM"),
+            "roe": metric.get("roeRfy") or metric.get("roeTTM"),  # Fiscal year first, fallback to TTM
+            "roa": metric.get("roaRfy") or metric.get("roaTTM"),
             "roic": metric.get("roicTTM"),
-            # Growth
+            # Growth (prefer TTM YoY for most current data)
             "revenue_growth_3y": metric.get("revenueGrowth3Y"),
             "revenue_growth_5y": metric.get("revenueGrowth5Y"),
+            "revenue_growth_ttm": metric.get("revenueGrowthTTMYoy"),  # Most current
             "eps_growth_3y": metric.get("epsGrowth3Y"),
             "eps_growth_5y": metric.get("epsGrowth5Y"),
-            "eps_growth_ttm": metric.get("epsGrowthTTMYoy"),
-            # Financial health
-            "current_ratio": metric.get("currentRatioAnnual"),
-            "quick_ratio": metric.get("quickRatioAnnual"),
-            "debt_to_equity": metric.get("totalDebt/totalEquityAnnual"),
-            "debt_to_assets": metric.get("totalDebt/totalAssetsAnnual"),
-            "long_term_debt_to_equity": metric.get("longTermDebt/equityAnnual"),
+            "eps_growth_ttm": metric.get("epsGrowthTTMYoy"),  # Most current
+            # Financial health (prefer quarterly for most current)
+            "current_ratio": metric.get("currentRatioQuarterly") or metric.get("currentRatioAnnual"),
+            "quick_ratio": metric.get("quickRatioQuarterly") or metric.get("quickRatioAnnual"),
+            "debt_to_equity": metric.get("totalDebt/totalEquityQuarterly") or metric.get("totalDebt/totalEquityAnnual"),
+            "debt_to_assets": metric.get("totalDebt/totalAssetsQuarterly") or metric.get("totalDebt/totalAssetsAnnual"),
+            "long_term_debt_to_equity": metric.get("longTermDebt/equityQuarterly") or metric.get("longTermDebt/equityAnnual"),
             "interest_coverage": metric.get("interestCoverageAnnual"),
             # Per-share
             "eps_ttm": metric.get("epsBasicExclExtraItemsTTM"),
