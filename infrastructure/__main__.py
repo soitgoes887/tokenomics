@@ -102,7 +102,7 @@ rebalancer_configmap = k8s.core.v1.ConfigMap(
 )
 
 # Portfolio Rebalancer CronJob - runs weekly to rebalance portfolio based on scores
-# Runs Monday at 2PM UTC (after market opens, after fundamentals refresh at 2AM)
+# Runs Monday at 3PM UTC (30 min after US market opens at 14:30 UTC)
 rebalancer_cronjob = k8s.batch.v1.CronJob(
     "rebalancer",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -110,8 +110,8 @@ rebalancer_cronjob = k8s.batch.v1.CronJob(
         namespace=namespace.metadata.name,
     ),
     spec=k8s.batch.v1.CronJobSpecArgs(
-        # Run every Monday at 2:00 PM UTC (market should be open)
-        schedule="0 14 * * 1",
+        # Run every Monday at 3:00 PM UTC (30 min after market open)
+        schedule="0 15 * * 1",
         concurrency_policy="Forbid",
         successful_jobs_history_limit=3,
         failed_jobs_history_limit=3,
