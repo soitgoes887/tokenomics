@@ -1,36 +1,242 @@
 # Tokenomics
 
-Algorithmic trading system that uses LLM-powered news sentiment analysis to trade US equities and crypto on Alpaca.
+Algorithmic trading system that uses fundamental analysis to manage a score-weighted portfolio of US equities on Alpaca.
 
 ## How It Works
 
-The system runs as a continuous daemon that:
+The system runs as three Kubernetes CronJobs:
 
-1. Polls **Alpaca News API** for financial news every 30 seconds
-2. Sends each article to **Google Gemini 2.5 Flash-Lite** for sentiment analysis
-3. Generates trade signals when conviction is above threshold (default: 70%)
-4. Executes trades on **Alpaca paper trading** (or live)
-5. Manages positions with stop-loss (2.5%), take-profit (6%), and 13-week max hold
+1. **Universe Job** (Monthly) — Fetches top 1,500 US stocks by market cap from Finnhub
+2. **Fundamentals Job** (Weekly) — Calculates composite quality scores (ROE, Debt, Growth)
+3. **Rebalancing Engine** (Weekly) — Trades to match score-weighted target portfolio
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                           TOKENOMICS TRADING SYSTEM                                     │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+                              EXTERNAL APIs
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                                                                 │
+    │   ┌─────────────┐         ┌─────────────┐       ┌───────────┐  │
+    │   │   FINNHUB   │         │   ALPACA    │       │  ALPACA   │  │
+    │   │  (Data API) │         │ (Data API)  │       │ (Trading) │  │
+    │   └──────┬──────┘         └──────┬──────┘       └─────┬─────┘  │
+    │          │                       │                    │        │
+    └──────────┼───────────────────────┼────────────────────┼────────┘
+               │                       │                    │
+               │ symbols               │ prices             │ orders
+               │ market cap            │                    │
+               │ financials            │                    │
+               ▼                       ▼                    ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                         │
+│   ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐        │
+│   │    UNIVERSE JOB     │    │  FUNDAMENTALS JOB   │    │  REBALANCING ENGINE │        │
+│   │    (Monthly)        │    │     (Weekly)        │    │      (Weekly)       │        │
+│   │                     │    │                     │    │                     │        │
+│   │  Schedule:          │    │  Schedule:          │    │  Schedule:          │        │
+│   │  1st of month 01:00 │    │  Monday 02:00 UTC   │    │  Monday 15:00 UTC   │        │
+│   │                     │    │                     │    │  (30min after open) │        │
+│   │  Duration: ~25 hrs  │    │  Duration: ~16 hrs  │    │  Duration: ~5 min   │        │
+│   └──────────┬──────────┘    └──────────┬──────────┘    └──────────┬──────────┘        │
+│              │                          │                          │                   │
+│   KUBERNETES CRONJOBS                   │                          │                   │
+│                                         │                          │                   │
+└──────────────┼──────────────────────────┼──────────────────────────┼───────────────────┘
+               │                          │                          │
+               ▼                          ▼                          ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                       REDIS                                             │
+│                                                                                         │
+│   ┌───────────────────────────────┐  ┌───────────────────────────────────────────────┐ │
+│   │      fundamentals:universe    │  │              fundamentals:scores              │ │
+│   │                               │  │                                               │ │
+│   │  {                            │  │  Sorted Set (by score descending):            │ │
+│   │    symbols: [AAPL, MSFT, ...] │  │                                               │ │
+│   │    count: 1500                │  │    NVDA  ─────────────────────────────  92.5  │ │
+│   │    updated_at: 2025-02-01     │  │    MSFT  ───────────────────────────    82.0  │ │
+│   │  }                            │  │    META  ──────────────────────────     78.0  │ │
+│   │                               │  │    GOOGL ─────────────────────────      74.9  │ │
+│   │  TTL: 45 days                 │  │    AAPL  ────────────────────────       68.4  │ │
+│   └───────────────────────────────┘  │    ...                                        │ │
+│                                      │                                               │ │
+│   ┌───────────────────────────────┐  │  TTL: 14 days                                 │ │
+│   │  fundamentals:universe:mcap   │  └───────────────────────────────────────────────┘ │
+│   │                               │                                                    │
+│   │  Sorted Set (by market cap):  │  ┌───────────────────────────────────────────────┐ │
+│   │    AAPL  ────────── 3,500,000 │  │           fundamentals:{SYMBOL}               │ │
+│   │    MSFT  ────────── 3,200,000 │  │                                               │ │
+│   │    NVDA  ────────── 2,800,000 │  │  fundamentals:NVDA = {                        │ │
+│   │    ...                        │  │    symbol: "NVDA",                            │ │
+│   │                               │  │    score: 92.5,                               │ │
+│   │  TTL: 45 days                 │  │    score_details: {                           │ │
+│   └───────────────────────────────┘  │      roe: 45.0,                               │ │
+│                                      │      debt_to_equity: 0.4,                     │ │
+│                                      │      revenue_growth: 40.0                     │ │
+│                                      │    },                                         │ │
+│                                      │    updated: "2025-02-10T00:00:00Z"            │ │
+│                                      │  }                                            │ │
+│                                      │  TTL: 14 days                                 │ │
+│                                      └───────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Data Flow
+
+```
+  1st of Month                    Every Monday
+       │                               │
+       ▼                               ▼
+  ┌─────────┐                    ┌───────────┐                         ┌─────────────┐
+  │ 01:00   │                    │  02:00    │                         │   15:00     │
+  │ Universe│                    │  Fundmtls │                         │  Rebalancer │
+  │  Job    │                    │   Job     │                         │   Engine    │
+  └────┬────┘                    └─────┬─────┘                         └──────┬──────┘
+       │                               │                                      │
+       │  1. Fetch all US symbols      │  1. Read universe from Redis         │  1. Load scores
+       │     from Finnhub              │  2. For each symbol:                 │  2. Compute weights
+       │  2. Get market cap each       │     - Check cache (skip if fresh)    │  3. Get current holdings
+       │  3. Sort by market cap        │     - Fetch financials               │  4. Generate trades
+       │  4. Save top 1500             │     - Calculate score                │  5. Execute orders
+       │                               │     - Save to Redis                  │
+       ▼                               ▼                                      ▼
+  ┌─────────┐                    ┌───────────┐                         ┌─────────────┐
+  │  REDIS  │───────────────────▶│   REDIS   │────────────────────────▶│   ALPACA    │
+  │ universe│                    │  scores   │                         │   BROKER    │
+  └─────────┘                    └───────────┘                         └─────────────┘
+```
+
+## Scoring Algorithm
+
+```
+                         ┌─────────────────────────────┐
+                         │     BasicFinancials         │
+                         │                             │
+                         │  • ROE (Return on Equity)   │
+                         │  • Debt/Equity Ratio        │
+                         │  • Revenue Growth (TTM)     │
+                         │  • EPS Growth (TTM)         │
+                         └──────────────┬──────────────┘
+                                        │
+                                        ▼
+         ┌──────────────────────────────────────────────────────────┐
+         │                    FundamentalsScorer                    │
+         │                                                          │
+         │   ┌────────────┐   ┌────────────┐   ┌────────────┐      │
+         │   │ ROE Score  │   │Debt Score  │   │Growth Score│      │
+         │   │            │   │            │   │            │      │
+         │   │ Range:     │   │ Range:     │   │ Range:     │      │
+         │   │ -20% → 40% │   │ 0 → 3.0    │   │ -30% → 50% │      │
+         │   │            │   │            │   │            │      │
+         │   │ Higher =   │   │ Lower =    │   │ Higher =   │      │
+         │   │ Better     │   │ Better     │   │ Better     │      │
+         │   │            │   │ (inverted) │   │            │      │
+         │   └─────┬──────┘   └─────┬──────┘   └─────┬──────┘      │
+         │         │                │                │              │
+         │         │ × 40%          │ × 30%          │ × 30%        │
+         │         │                │                │              │
+         │         └────────────────┼────────────────┘              │
+         │                          │                               │
+         │                          ▼                               │
+         │                 ┌─────────────────┐                      │
+         │                 │ COMPOSITE SCORE │                      │
+         │                 │     (0-100)     │                      │
+         │                 └─────────────────┘                      │
+         └──────────────────────────────────────────────────────────┘
+```
+
+**Weights:** ROE (40%) + Debt (30%) + Growth (30%)
+
+| Metric | Range | Scoring |
+|--------|-------|---------|
+| ROE | -20% to +40% | Higher = better |
+| Debt/Equity | 0 to 3.0 | Lower = better (inverted) |
+| Revenue/EPS Growth | -30% to +50% | Higher = better |
+
+## Rebalancing Algorithm
+
+```
+         ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+         │    REDIS     │         │    ALPACA    │         │    ALPACA    │
+         │   (scores)   │         │  (holdings)  │         │   (prices)   │
+         └──────┬───────┘         └──────┬───────┘         └──────┬───────┘
+                │                        │                        │
+                │ top 100 scores         │ current positions      │ latest prices
+                ▼                        ▼                        ▼
+         ┌─────────────────────────────────────────────────────────────────┐
+         │                    compute_target_weights()                     │
+         │                                                                 │
+         │   1. Filter by min_score (50)                                   │
+         │   2. Take top_n (100)                                           │
+         │   3. Score-weight: weight = score / sum(all_scores)             │
+         │   4. Cap at max_position_pct (5%)                               │
+         │   5. Re-normalize to 100%                                       │
+         └─────────────────────────────────┬───────────────────────────────┘
+                                           │
+                                           ▼
+         ┌─────────────────────────────────────────────────────────────────┐
+         │                      generate_trades()                          │
+         │                                                                 │
+         │   For each symbol:                                              │
+         │     delta = target_weight - current_weight                      │
+         │                                                                 │
+         │     Skip if:                                                    │
+         │       • |deviation| < 20% of target (threshold)                 │
+         │       • |trade_usd| < $100 (min trade)                          │
+         │                                                                 │
+         │     Generate:                                                   │
+         │       • SELL if delta < 0 (or target = 0)                       │
+         │       • BUY if delta > 0                                        │
+         └─────────────────────────────────┬───────────────────────────────┘
+                                           │
+                                           ▼
+         ┌─────────────────────────────────────────────────────────────────┐
+         │                      execute_trades()                           │
+         │                                                                 │
+         │   1. SELLS first (free up capital)                              │
+         │   2. BUYS second                                                │
+         └─────────────────────────────────────────────────────────────────┘
+```
+
+**Example (100-stock portfolio, showing 5):**
+
+| Stock | Score | Weight | Target $ (of $100k) |
+|-------|-------|--------|---------------------|
+| NVDA | 92.5 | 1.32% | $1,320 |
+| MSFT | 82.0 | 1.17% | $1,170 |
+| GOOGL | 74.9 | 1.07% | $1,070 |
+| AAPL | 68.4 | 0.98% | $980 |
+| AMZN | 58.7 | 0.84% | $840 |
 
 ## Project Structure
 
 ```
 src/tokenomics/
-├── __main__.py              # Entry point: python -m tokenomics
+├── __main__.py              # Entry point
 ├── config.py                # Pydantic config from YAML + .env
-├── models.py                # Domain models (NewsArticle, SentimentResult, TradeSignal, Position)
-├── logging_config.py        # Structured logging (app, trades, decisions)
-├── engine.py                # Main async event loop
-├── news/fetcher.py          # Alpaca News polling + deduplication
-├── analysis/sentiment.py    # Gemini sentiment analysis
-├── trading/broker.py        # Alpaca order execution (equities + crypto)
-├── trading/signals.py       # Conviction filtering + position sizing
-├── portfolio/manager.py     # Position lifecycle + state persistence
-└── portfolio/risk.py        # Daily/monthly loss limits
+├── models.py                # Domain models
+├── rebalancing/
+│   ├── engine.py            # Main rebalancing orchestrator
+│   ├── portfolio.py         # Target weight computation
+│   └── trader.py            # Trade generation
+├── fundamentals/
+│   ├── universe_job.py      # Monthly market cap ranking
+│   ├── refresh_job.py       # Weekly score calculation
+│   ├── scorer.py            # Composite score algorithm
+│   ├── finnhub.py           # Finnhub API client
+│   └── store.py             # Redis storage
+├── trading/
+│   ├── broker.py            # Alpaca order execution
+│   └── base.py              # BrokerProvider interface
+└── analysis/
+    ├── sentiment.py         # Gemini LLM provider (for future use)
+    └── perplexity.py        # Perplexity LLM provider (for future use)
 
 config/settings.yaml         # All strategy parameters
 infrastructure/              # Pulumi K8s deployment
-.github/workflows/ci.yaml   # CI/CD pipeline
 ```
 
 ## Quick Start
@@ -50,35 +256,23 @@ cp .env.example .env
 # Edit .env with your keys:
 #   ALPACA_API_KEY=...
 #   ALPACA_SECRET_KEY=...
-#   GEMINI_API_KEY=...
+#   FINNHUB_API_KEY=...
+#   REDIS_HOST=...
+#   REDIS_PASSWORD=...
 ```
 
-### 3. Verify connectivity
+### 3. Run jobs manually
 
 ```bash
-PYTHONPATH=src python scripts/check_connectivity.py
-```
+# Universe job (monthly)
+PYTHONPATH=src python -m tokenomics.fundamentals.universe_job
 
-### 4. Run
+# Fundamentals job (weekly)
+PYTHONPATH=src python -m tokenomics.fundamentals.refresh_job
 
-```bash
+# Rebalancer (weekly)
 PYTHONPATH=src python -m tokenomics
 ```
-
-### 5. Monitor
-
-```bash
-# All logs
-tail -f logs/*.log
-
-# Pretty-print trade log
-tail -f logs/trades.log | jq .
-
-# Decision log (every LLM analysis)
-tail -f logs/decisions.log | jq .
-```
-
-Stop with `Ctrl+C` — graceful shutdown persists state to `data/state.json`.
 
 ## Configuration
 
@@ -86,17 +280,21 @@ All parameters are in `config/settings.yaml`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `strategy.capital_usd` | 10000 | Paper trading capital |
-| `strategy.position_size_min_usd` | 500 | Min position size |
-| `strategy.position_size_max_usd` | 1000 | Max position size |
-| `strategy.max_open_positions` | 10 | Max concurrent positions |
-| `sentiment.min_conviction` | 70 | Min conviction to trade (0-100) |
-| `risk.stop_loss_pct` | 0.025 | Stop loss percentage |
-| `risk.take_profit_pct` | 0.06 | Take profit percentage |
-| `risk.max_hold_trading_days` | 65 | Max hold period (13 weeks) |
-| `news.poll_interval_seconds` | 30 | News polling interval |
+| `rebalancing.top_n_stocks` | 100 | Number of stocks in portfolio |
+| `rebalancing.weighting` | "score" | Weight method: "score" or "equal" |
+| `rebalancing.max_position_pct` | 5.0 | Max weight per stock (%) |
+| `rebalancing.min_score` | 50.0 | Min score to include |
+| `rebalancing.rebalance_threshold_pct` | 20.0 | Min deviation to trade (%) |
 | `trading.paper` | true | Paper vs live trading |
 | `trading.market_hours_only` | true | Only trade during US market hours |
+
+## CronJob Schedule
+
+| Job | Schedule | Time (UTC) | Duration |
+|-----|----------|------------|----------|
+| Universe | `0 1 1 * *` | 1st of month, 01:00 | ~25 hours |
+| Fundamentals | `0 2 * * 1` | Monday, 02:00 | ~16 hours |
+| Rebalancer | `0 15 * * 1` | Monday, 15:00 | ~5 minutes |
 
 ## Testing
 
@@ -104,86 +302,45 @@ All parameters are in `config/settings.yaml`:
 PYTHONPATH=src pytest tests/unit/ -v
 ```
 
-66 unit tests covering config validation, models, news fetching, sentiment analysis, signal generation, risk management, broker execution, and position management.
-
-## CI/CD Pipeline
-
-The GitHub Actions pipeline (`.github/workflows/ci.yaml`) runs on every push to `main`:
-
-1. **test** — runs pytest
-2. **build-and-push** — builds multi-arch Docker image (amd64 + arm64), pushes to Docker Hub as `anicu/tokenomics:<YYYYMMDD-shorthash>`
-3. **deploy** — runs `pulumi up` to update the Kubernetes deployment
-4. **release** — creates a GitHub release with the image tag
-
-### Required GitHub Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `DOCKERHUB_USERNAME` | Docker Hub username |
-| `DOCKERHUB_TOKEN` | Docker Hub access token |
-| `PULUMI_ACCESS_TOKEN` | Pulumi Cloud access token |
-| `PULUMI_CONFIG_PASSPHRASE` | Pulumi stack encryption passphrase |
-| `KUBECONFIG_B64` | Base64-encoded kubeconfig for the K8s cluster |
-
 ## Kubernetes Deployment
 
 The Pulumi project in `infrastructure/` creates:
 
 - **Namespace:** `tokenomics`
-- **Secret:** API keys (Alpaca + Gemini)
+- **Secrets:** API keys (Alpaca, Finnhub, Redis)
 - **ConfigMap:** `settings.yaml`
-- **Deployment:** 1 replica with resource limits
+- **CronJobs:** universe-refresh, fundamentals-refresh, rebalancer
 
-### Manual deployment
+### Deploy
 
 ```bash
 cd infrastructure
-pip install -r requirements.txt
 pulumi stack select dev
 pulumi config set --secret tokenomics:alpaca_api_key <key>
 pulumi config set --secret tokenomics:alpaca_secret_key <key>
-pulumi config set --secret tokenomics:gemini_api_key <key>
+pulumi config set --secret tokenomics:finnhub_api_key <key>
 pulumi up
 ```
 
-### Check pod status
+### Monitor
 
 ```bash
-kubectl -n tokenomics get pods
-kubectl -n tokenomics logs -f deployment/tokenomics
-```
+# Check cronjob status
+kubectl -n tokenomics get cronjobs
 
-## Architecture
+# View rebalancer logs
+kubectl -n tokenomics logs -f job/rebalancer-<id>
 
-```
-Alpaca News API  →  NewsFetcher (poll + dedup)
-                        │
-                  list[NewsArticle]
-                        │
-                SentimentAnalyzer (Gemini Flash-Lite)
-                        │
-                 list[SentimentResult]
-                        │
-                SignalGenerator (conviction >= 70, capacity check)
-                        │
-                  TradeSignal | None
-                        │
-                RiskManager (daily/monthly loss limits)
-                        │
-                AlpacaBroker.submit_buy_order()
-                        │
-                PositionManager → state.json
-
-Each tick also:
-  PositionManager.check_exits(current_prices)
-    → close on stop_loss | take_profit | max_hold
+# Trigger manual run
+kubectl -n tokenomics create job --from=cronjob/rebalancer rebalancer-manual
 ```
 
 ## Tech Stack
 
-- **Python 3.14** with asyncio
-- **Alpaca** — trading + news API (commission-free)
-- **Google Gemini 2.5 Flash-Lite** — sentiment analysis
+- **Python 3.14**
+- **Alpaca** — trading API (commission-free)
+- **Finnhub** — fundamental data API
+- **Redis** — score and universe storage
 - **Pydantic** — config validation + domain models
 - **structlog** — structured JSON logging
 - **Pulumi** — Kubernetes infrastructure as code
