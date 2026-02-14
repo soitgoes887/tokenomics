@@ -294,5 +294,86 @@ sentiment:
 
     pulumi.export(f"{deploy_name}/image", image)
 
+# Fundamentals refresh CronJob - runs weekly to update company scores
+fundamentals_cronjob = k8s.batch.v1.CronJob(
+    "fundamentals-refresh",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="fundamentals-refresh",
+        namespace=namespace.metadata.name,
+    ),
+    spec=k8s.batch.v1.CronJobSpecArgs(
+        # Run every Monday at 2:00 AM UTC
+        schedule="0 2 * * 1",
+        concurrency_policy="Forbid",
+        successful_jobs_history_limit=3,
+        failed_jobs_history_limit=3,
+        job_template=k8s.batch.v1.JobTemplateSpecArgs(
+            spec=k8s.batch.v1.JobSpecArgs(
+                ttl_seconds_after_finished=86400,  # Clean up after 24 hours
+                backoff_limit=3,
+                template=k8s.core.v1.PodTemplateSpecArgs(
+                    metadata=k8s.meta.v1.ObjectMetaArgs(
+                        labels={"app": "tokenomics", "component": "fundamentals-refresh"},
+                    ),
+                    spec=k8s.core.v1.PodSpecArgs(
+                        restart_policy="OnFailure",
+                        containers=[
+                            k8s.core.v1.ContainerArgs(
+                                name="fundamentals-refresh",
+                                image=image,
+                                command=["python", "-m", "tokenomics.fundamentals.refresh_job"],
+                                env=[
+                                    # Redis configuration
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="REDIS_HOST",
+                                        value="redis.redis.svc.cluster.local",
+                                    ),
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="REDIS_PORT",
+                                        value="6379",
+                                    ),
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="REDIS_PASSWORD",
+                                        value_from=k8s.core.v1.EnvVarSourceArgs(
+                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
+                                                name="redis-secret",
+                                                key="redis-password",
+                                            ),
+                                        ),
+                                    ),
+                                    # Finnhub API key
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="FINNHUB_API_KEY",
+                                        value_from=k8s.core.v1.EnvVarSourceArgs(
+                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
+                                                name="tokenomics-secrets",
+                                                key="FINNHUB_API_KEY",
+                                            ),
+                                        ),
+                                    ),
+                                    # Configuration
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="FUNDAMENTALS_LIMIT",
+                                        value="1250",
+                                    ),
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="FUNDAMENTALS_BATCH_SIZE",
+                                        value="50",
+                                    ),
+                                ],
+                                resources=k8s.core.v1.ResourceRequirementsArgs(
+                                    requests={"cpu": "100m", "memory": "256Mi"},
+                                    limits={"cpu": "500m", "memory": "512Mi"},
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+
 pulumi.export("namespace", namespace.metadata.name)
 pulumi.export("profiles", [f"{p['news']}-{p['llm']}-{p['broker']}" for p in profiles])
+pulumi.export("fundamentals-cronjob", fundamentals_cronjob.metadata.name)

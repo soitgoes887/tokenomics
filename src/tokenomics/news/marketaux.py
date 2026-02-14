@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 import structlog
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from tokenomics.config import AppConfig, Secrets
 from tokenomics.models import NewsArticle
@@ -97,7 +98,7 @@ class MarketauxNewsProvider(NewsProvider):
                 )
                 return []
 
-        # Make the API call
+        # Make the API call with retry on timeout
         try:
             params = self._build_params()
 
@@ -109,7 +110,7 @@ class MarketauxNewsProvider(NewsProvider):
                 since=params.get("published_after", "first_fetch"),
             )
 
-            response = self._session.get(MARKETAUX_BASE_URL, params=params, timeout=30)
+            response = self._fetch_with_retry(params)
             response.raise_for_status()
             data = response.json()
 
@@ -188,6 +189,26 @@ class MarketauxNewsProvider(NewsProvider):
             )
 
         return params
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=30),
+        retry=retry_if_exception_type(requests.exceptions.Timeout),
+        reraise=True,
+    )
+    def _fetch_with_retry(self, params: dict) -> requests.Response:
+        """
+        Fetch from marketaux API with retry on timeout.
+
+        Retries up to 3 times with exponential backoff (4s, 8s, 16s).
+        Only retries on Timeout errors, not HTTP errors.
+        """
+        logger.debug(
+            "news.api_call_attempt",
+            provider="marketaux",
+            timeout=60,
+        )
+        return self._session.get(MARKETAUX_BASE_URL, params=params, timeout=60)
 
     def _normalize_article(self, raw: dict) -> NewsArticle:
         """Convert MarketAux article to our domain model."""

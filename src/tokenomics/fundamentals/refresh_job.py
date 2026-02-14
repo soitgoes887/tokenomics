@@ -1,0 +1,470 @@
+"""Fundamentals refresh cronjob entry point.
+
+This script is designed to run as a K8s CronJob (weekly) to:
+1. Fetch the list of US common stock symbols from Finnhub
+2. Fetch basic financials for each company
+3. Calculate composite fundamental scores
+4. Store everything in Redis for use by trading profiles
+
+Usage:
+    PYTHONPATH=src python -m tokenomics.fundamentals.refresh_job
+
+Environment variables:
+    FINNHUB_API_KEY: Finnhub API key (required)
+    REDIS_HOST: Redis host (default: localhost)
+    REDIS_PORT: Redis port (default: 6379)
+    REDIS_PASSWORD: Redis password (optional)
+    FUNDAMENTALS_LIMIT: Max companies to process (default: 1250)
+    FUNDAMENTALS_BATCH_SIZE: Batch size for Redis writes (default: 50)
+"""
+
+import logging
+import os
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
+
+import structlog
+
+from tokenomics.config import Secrets
+from tokenomics.fundamentals import (
+    FinancialsFetchError,
+    FinnhubFinancialsProvider,
+    FundamentalsScorer,
+    FundamentalsStore,
+)
+from tokenomics.fundamentals.scorer import FundamentalsScore
+from tokenomics.models import BasicFinancials
+
+
+def setup_cronjob_logging() -> None:
+    """Configure simple console logging for cronjob."""
+    # Shared structlog processors
+    shared_processors: list[structlog.types.Processor] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.UnicodeDecoder(),
+    ]
+
+    # Configure structlog
+    structlog.configure(
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+    # Console formatter for human-readable output
+    console_formatter = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.dev.ConsoleRenderer(colors=False),
+        foreign_pre_chain=shared_processors,
+    )
+
+    # Root logger - console only for cronjob
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Silence noisy third-party loggers
+    for noisy_logger in ["urllib3", "httpcore", "httpx"]:
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(console_formatter)
+    root_logger.addHandler(console_handler)
+
+
+# Configure logging at import time
+setup_cronjob_logging()
+logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class CompanyResult:
+    """Result for a single company analysis."""
+
+    symbol: str
+    name: str
+    score: float
+    roe: Optional[float]
+    debt_to_equity: Optional[float]
+    revenue_growth: Optional[float]
+    eps_growth: Optional[float]
+    status: str  # "success", "failed", "no_data"
+
+
+def format_pct(value: Optional[float]) -> str:
+    """Format a percentage value for display."""
+    if value is None:
+        return "N/A"
+    return f"{value:>7.2f}%"
+
+
+def format_ratio(value: Optional[float]) -> str:
+    """Format a ratio value for display."""
+    if value is None:
+        return "N/A"
+    return f"{value:>7.2f}"
+
+
+def format_score(value: float) -> str:
+    """Format a score value for display."""
+    return f"{value:>6.1f}"
+
+
+def print_summary_table(results: list[CompanyResult]) -> None:
+    """Print a formatted table of all company results to stdout.
+
+    This will be visible in kubectl logs for the cronjob.
+    """
+    # Sort by score descending
+    sorted_results = sorted(results, key=lambda x: x.score, reverse=True)
+
+    # Table header
+    header = (
+        f"{'Rank':<6} "
+        f"{'Symbol':<8} "
+        f"{'Company Name':<35} "
+        f"{'Score':>8} "
+        f"{'ROE':>10} "
+        f"{'D/E Ratio':>10} "
+        f"{'Rev Grth':>10} "
+        f"{'EPS Grth':>10} "
+        f"{'Status':<10}"
+    )
+    separator = "=" * len(header)
+
+    print("\n")
+    print(separator)
+    print("FUNDAMENTALS ANALYSIS SUMMARY")
+    print(separator)
+    print(header)
+    print("-" * len(header))
+
+    for rank, result in enumerate(sorted_results, 1):
+        # Truncate company name if too long
+        name = result.name[:33] + ".." if len(result.name) > 35 else result.name
+
+        row = (
+            f"{rank:<6} "
+            f"{result.symbol:<8} "
+            f"{name:<35} "
+            f"{format_score(result.score):>8} "
+            f"{format_pct(result.roe):>10} "
+            f"{format_ratio(result.debt_to_equity):>10} "
+            f"{format_pct(result.revenue_growth):>10} "
+            f"{format_pct(result.eps_growth):>10} "
+            f"{result.status:<10}"
+        )
+        print(row)
+
+    print(separator)
+
+    # Summary statistics
+    successful = [r for r in results if r.status == "success"]
+    failed = [r for r in results if r.status == "failed"]
+    no_data = [r for r in results if r.status == "no_data"]
+
+    if successful:
+        scores = [r.score for r in successful]
+        avg_score = sum(scores) / len(scores)
+        max_score = max(scores)
+        min_score = min(scores)
+
+        print(f"\nSTATISTICS:")
+        print(f"  Total Processed:    {len(results)}")
+        print(f"  Successful:         {len(successful)}")
+        print(f"  Failed:             {len(failed)}")
+        print(f"  No Data:            {len(no_data)}")
+        print(f"  Average Score:      {avg_score:.1f}")
+        print(f"  Max Score:          {max_score:.1f}")
+        print(f"  Min Score:          {min_score:.1f}")
+
+        # Top 10 summary
+        print(f"\nTOP 10 COMPANIES BY SCORE:")
+        for i, r in enumerate(sorted_results[:10], 1):
+            print(f"  {i:>2}. {r.symbol:<6} - {r.score:.1f} ({r.name[:40]})")
+
+        # Bottom 10 summary
+        print(f"\nBOTTOM 10 COMPANIES BY SCORE:")
+        for i, r in enumerate(sorted_results[-10:], len(sorted_results) - 9):
+            print(f"  {i:>2}. {r.symbol:<6} - {r.score:.1f} ({r.name[:40]})")
+
+    print(separator)
+    print("\n")
+
+
+def main() -> int:
+    """Run the fundamentals refresh job.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    start_time = datetime.now(timezone.utc)
+
+    print("=" * 80)
+    print("TOKENOMICS FUNDAMENTALS REFRESH JOB")
+    print("=" * 80)
+    print(f"Start Time: {start_time.isoformat()}")
+    print()
+
+    logger.info(
+        "fundamentals_job.starting",
+        timestamp=start_time.isoformat(),
+    )
+
+    try:
+        # Load configuration
+        secrets = Secrets()
+        if not secrets.finnhub_api_key:
+            print("ERROR: FINNHUB_API_KEY environment variable not set")
+            logger.error("fundamentals_job.missing_finnhub_api_key")
+            return 1
+
+        # Check Redis configuration
+        redis_host = os.getenv("REDIS_HOST", "localhost")
+        redis_port = os.getenv("REDIS_PORT", "6379")
+        redis_password = os.getenv("REDIS_PASSWORD")
+
+        print(f"Configuration:")
+        print(f"  Redis Host:     {redis_host}")
+        print(f"  Redis Port:     {redis_port}")
+        print(f"  Redis Password: {'***' if redis_password else 'NOT SET'}")
+        print(f"  Finnhub API:    {'***' + secrets.finnhub_api_key[-4:] if secrets.finnhub_api_key else 'NOT SET'}")
+        print()
+
+        if not redis_password:
+            print("WARNING: REDIS_PASSWORD not set - connection may fail if Redis requires auth")
+            logger.warning("fundamentals_job.redis_password_not_set")
+
+        limit = int(os.getenv("FUNDAMENTALS_LIMIT", "1250"))
+        batch_size = int(os.getenv("FUNDAMENTALS_BATCH_SIZE", "50"))
+
+        print(f"  Companies Limit:   {limit}")
+        print(f"  Batch Size:        {batch_size}")
+        print()
+
+        logger.info(
+            "fundamentals_job.config_loaded",
+            redis_host=redis_host,
+            redis_port=redis_port,
+            redis_password_set=bool(redis_password),
+            limit=limit,
+            batch_size=batch_size,
+        )
+
+        # Initialize components
+        print("Initializing providers...")
+        provider = FinnhubFinancialsProvider(secrets)
+        scorer = FundamentalsScorer()
+        print("  Finnhub provider: OK")
+        print("  Scorer: OK")
+
+        print("Connecting to Redis...")
+        store = FundamentalsStore()
+        print("  Redis connection: OK")
+        print()
+
+        logger.info("fundamentals_job.providers_initialized")
+
+        # Step 1: Fetch US symbols
+        print(f"Fetching US stock symbols (limit: {limit})...")
+        symbols = provider.get_us_symbols(limit=limit)
+        print(f"  Fetched {len(symbols)} symbols")
+        print()
+
+        logger.info(
+            "fundamentals_job.symbols_fetched",
+            count=len(symbols),
+        )
+
+        if not symbols:
+            print("ERROR: No symbols returned from Finnhub")
+            logger.error("fundamentals_job.no_symbols")
+            return 1
+
+        # Create a mapping of symbol to company name
+        symbol_names = {s.symbol: s.description for s in symbols}
+
+        # Step 2: Process each company
+        print(f"Processing {len(symbols)} companies...")
+        print("-" * 60)
+
+        results: list[CompanyResult] = []
+        batch: list[tuple[BasicFinancials, FundamentalsScore]] = []
+        success_count = 0
+        failed_count = 0
+        no_data_count = 0
+
+        for i, company in enumerate(symbols):
+            symbol = company.symbol
+            progress_pct = ((i + 1) / len(symbols)) * 100
+
+            try:
+                # Fetch financials
+                financials = provider.get_basic_financials(symbol)
+
+                # Calculate score
+                score = scorer.calculate_score(financials)
+
+                # Add to batch for Redis
+                batch.append((financials, score))
+
+                # Track result
+                result = CompanyResult(
+                    symbol=symbol,
+                    name=company.description,
+                    score=score.composite_score,
+                    roe=score.roe,
+                    debt_to_equity=score.debt_to_equity,
+                    revenue_growth=score.revenue_growth,
+                    eps_growth=score.eps_growth,
+                    status="success" if score.has_sufficient_data else "no_data",
+                )
+                results.append(result)
+
+                if score.has_sufficient_data:
+                    success_count += 1
+                else:
+                    no_data_count += 1
+
+                # Log every company with score
+                logger.info(
+                    "fundamentals_job.company_processed",
+                    symbol=symbol,
+                    score=score.composite_score,
+                    roe=score.roe,
+                    debt_ratio=score.debt_to_equity,
+                    growth=score.revenue_growth,
+                    has_data=score.has_sufficient_data,
+                )
+
+                # Print progress every 50 companies
+                if (i + 1) % 50 == 0:
+                    print(
+                        f"  [{progress_pct:5.1f}%] Processed {i + 1}/{len(symbols)} - "
+                        f"Success: {success_count}, Failed: {failed_count}, No Data: {no_data_count}"
+                    )
+
+                # Save batch to Redis when full
+                if len(batch) >= batch_size:
+                    store.save_batch(batch)
+                    logger.debug(
+                        "fundamentals_job.batch_saved",
+                        batch_size=len(batch),
+                    )
+                    batch = []
+
+                # Rate limiting: ~20 requests per second (staying under 30/sec limit)
+                time.sleep(0.05)
+
+            except FinancialsFetchError as e:
+                failed_count += 1
+                results.append(
+                    CompanyResult(
+                        symbol=symbol,
+                        name=company.description,
+                        score=0.0,
+                        roe=None,
+                        debt_to_equity=None,
+                        revenue_growth=None,
+                        eps_growth=None,
+                        status="failed",
+                    )
+                )
+                logger.warning(
+                    "fundamentals_job.company_failed",
+                    symbol=symbol,
+                    error=str(e),
+                )
+
+            except Exception as e:
+                failed_count += 1
+                results.append(
+                    CompanyResult(
+                        symbol=symbol,
+                        name=company.description,
+                        score=0.0,
+                        roe=None,
+                        debt_to_equity=None,
+                        revenue_growth=None,
+                        eps_growth=None,
+                        status="failed",
+                    )
+                )
+                logger.error(
+                    "fundamentals_job.company_error",
+                    symbol=symbol,
+                    error=str(e),
+                    exc_info=True,
+                )
+
+        # Save any remaining items in batch
+        if batch:
+            store.save_batch(batch)
+            logger.info(
+                "fundamentals_job.final_batch_saved",
+                batch_size=len(batch),
+            )
+
+        print("-" * 60)
+        print(f"Processing complete!")
+        print()
+
+        # Final summary
+        end_time = datetime.now(timezone.utc)
+        duration = (end_time - start_time).total_seconds()
+        duration_minutes = duration / 60
+
+        # Get top 10 from Redis to verify storage
+        top_companies = store.get_top_scores(10)
+        total_in_store = store.get_total_count()
+
+        logger.info(
+            "fundamentals_job.completed",
+            duration_seconds=round(duration, 2),
+            total_symbols=len(symbols),
+            success=success_count,
+            failed=failed_count,
+            no_data=no_data_count,
+            total_in_store=total_in_store,
+            top_10=[(s, round(score, 1)) for s, score in top_companies],
+        )
+
+        # Print the summary table
+        print_summary_table(results)
+
+        # Final job summary
+        print("JOB SUMMARY")
+        print("=" * 60)
+        print(f"  Start Time:         {start_time.isoformat()}")
+        print(f"  End Time:           {end_time.isoformat()}")
+        print(f"  Duration:           {duration_minutes:.1f} minutes ({duration:.0f} seconds)")
+        print(f"  Companies in Redis: {total_in_store}")
+        print()
+        print("Job completed successfully!")
+        print("=" * 60)
+
+        store.close()
+        return 0
+
+    except Exception as e:
+        print(f"\nFATAL ERROR: {e}")
+        logger.error(
+            "fundamentals_job.fatal_error",
+            error=str(e),
+            exc_info=True,
+        )
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
