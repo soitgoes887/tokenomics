@@ -14,6 +14,11 @@ class BrokerProvider(ABC):
         ...
 
     @abstractmethod
+    def submit_buy_order_qty(self, symbol: str, quantity: int) -> str:
+        """Submit a buy order by quantity. Returns order ID."""
+        ...
+
+    @abstractmethod
     def submit_sell_order(self, symbol: str, quantity: float) -> str:
         """Submit a sell order. Returns order ID."""
         ...

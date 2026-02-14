@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from typing import Literal, Optional
+
 import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
@@ -12,7 +14,7 @@ class StrategyConfig(BaseModel):
     capital_usd: float = Field(gt=0)
     position_size_min_usd: float = Field(gt=0)
     position_size_max_usd: float = Field(gt=0)
-    max_open_positions: int = Field(ge=1, le=20)
+    max_open_positions: int = Field(ge=1, le=100)
     target_new_positions_per_month: int = Field(ge=1)
 
     @field_validator("position_size_max_usd")
@@ -53,6 +55,17 @@ class TradingConfig(BaseModel):
     time_in_force: str = "day"
 
 
+class RebalancingConfig(BaseModel):
+    """Configuration for score-based portfolio rebalancing."""
+
+    top_n_stocks: int = Field(default=50, ge=1, le=500)
+    weighting: Literal["score", "equal"] = "score"
+    max_position_pct: float = Field(default=5.0, gt=0, le=100)
+    min_score: float = Field(default=50.0, ge=0, le=100)
+    rebalance_threshold_pct: float = Field(default=20.0, ge=0, le=100)
+    min_trade_usd: float = Field(default=100.0, ge=0)
+
+
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     trade_log: str
@@ -71,11 +84,12 @@ class ProvidersConfig(BaseModel):
 class AppConfig(BaseModel):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     strategy: StrategyConfig
-    sentiment: SentimentConfig
-    risk: RiskConfig
-    news: NewsConfig
+    sentiment: Optional[SentimentConfig] = None
+    risk: Optional[RiskConfig] = None
+    news: Optional[NewsConfig] = None
     trading: TradingConfig
     logging: LoggingConfig
+    rebalancing: RebalancingConfig = Field(default_factory=RebalancingConfig)
 
 
 class Secrets(BaseSettings):
