@@ -8,7 +8,7 @@ from typing import Protocol
 import finnhub
 import structlog
 
-from tokenomics.fundamentals.base import FinancialsFetchError, FinancialsProvider
+from tokenomics.fundamentals.base import FinancialsFetchError, FinancialsProvider, NoFinancialsDataError
 from tokenomics.models import BasicFinancials, MetricDataPoint
 
 logger = structlog.get_logger(__name__)
@@ -83,7 +83,10 @@ class FinnhubFinancialsProvider(FinancialsProvider):
                 for item in response
                 if item.get("type") == "Common Stock"
                 and item.get("symbol")
-                and not self._is_special_symbol(item.get("symbol", ""))
+                and not self._is_special_symbol(
+                    item.get("symbol", ""),
+                    item.get("description", "")
+                )
             ]
 
             # Sort by symbol for consistent ordering
@@ -103,10 +106,10 @@ class FinnhubFinancialsProvider(FinancialsProvider):
             logger.error("symbols.api_error", error=str(e))
             raise FinancialsFetchError(f"Failed to fetch US symbols: {e}") from e
 
-    def _is_special_symbol(self, symbol: str) -> bool:
+    def _is_special_symbol(self, symbol: str, description: str = "") -> bool:
         """Check if symbol is a special/derivative symbol to exclude.
 
-        Excludes warrants, units, preferred shares, etc.
+        Excludes warrants, units, preferred shares, fractional RE, etc.
         """
         # Exclude symbols with special suffixes
         special_suffixes = [".W", ".U", ".R", "-P", "-A", "-B", "-C", "-D"]
@@ -118,6 +121,20 @@ class FinnhubFinancialsProvider(FinancialsProvider):
         if any(char in symbol for char in [".", "-", "+"]):
             # Allow simple symbols that might have legit dots (rare)
             if len(symbol) > 5:
+                return True
+
+        # Exclude fractional real estate and special investment vehicles
+        # These are classified as "Common Stock" but have no financials
+        description_lower = description.lower()
+        exclude_keywords = [
+            "arrived homes",  # Fractional real estate
+            "fundrise",       # Real estate crowdfunding
+            "yieldstreet",    # Alternative investments
+            " ser ",          # Series offerings (e.g., "SER ARYA")
+            " series ",       # Series offerings
+        ]
+        for keyword in exclude_keywords:
+            if keyword in description_lower:
                 return True
 
         return False
@@ -149,8 +166,8 @@ class FinnhubFinancialsProvider(FinancialsProvider):
                 )
 
                 if not response or not response.get("metric"):
-                    raise FinancialsFetchError(
-                        f"No financials data returned for {symbol}"
+                    raise NoFinancialsDataError(
+                        f"No financials data available for {symbol}"
                     )
 
                 financials = self._parse_response(symbol, response)

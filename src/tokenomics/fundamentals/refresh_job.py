@@ -1,10 +1,12 @@
 """Fundamentals refresh cronjob entry point.
 
 This script is designed to run as a K8s CronJob (weekly) to:
-1. Fetch the list of US common stock symbols from Finnhub
+1. Read the stock universe from Redis (set by monthly universe job)
 2. Fetch basic financials for each company
 3. Calculate composite fundamental scores
 4. Store everything in Redis for use by trading profiles
+
+Requires the universe to exist in Redis (populated by universe_job).
 
 Usage:
     PYTHONPATH=src python -m tokenomics.fundamentals.refresh_job
@@ -14,7 +16,7 @@ Environment variables:
     REDIS_HOST: Redis host (default: localhost)
     REDIS_PORT: Redis port (default: 6379)
     REDIS_PASSWORD: Redis password (optional)
-    FUNDAMENTALS_LIMIT: Max companies to process (default: 1250)
+    FUNDAMENTALS_LIMIT: Max companies to process (default: 1000)
     FUNDAMENTALS_BATCH_SIZE: Batch size for Redis writes (default: 50)
 """
 
@@ -34,6 +36,7 @@ from tokenomics.fundamentals import (
     FinnhubFinancialsProvider,
     FundamentalsScorer,
     FundamentalsStore,
+    NoFinancialsDataError,
 )
 from tokenomics.fundamentals.scorer import FundamentalsScore
 from tokenomics.models import BasicFinancials
@@ -258,7 +261,7 @@ def main() -> int:
             print("WARNING: REDIS_PASSWORD not set - connection may fail if Redis requires auth")
             logger.warning("fundamentals_job.redis_password_not_set")
 
-        limit = int(os.getenv("FUNDAMENTALS_LIMIT", "1250"))
+        limit = int(os.getenv("FUNDAMENTALS_LIMIT", "1000"))
         batch_size = int(os.getenv("FUNDAMENTALS_BATCH_SIZE", "50"))
 
         print(f"  Companies Limit:   {limit}")
@@ -288,24 +291,41 @@ def main() -> int:
 
         logger.info("fundamentals_job.providers_initialized")
 
-        # Step 1: Fetch US symbols
-        print(f"Fetching US stock symbols (limit: {limit})...")
-        symbols = provider.get_us_symbols(limit=limit)
-        print(f"  Fetched {len(symbols)} symbols")
-        print()
+        # Step 1: Get symbols from universe in Redis
+        universe = store.get_universe()
 
-        logger.info(
-            "fundamentals_job.symbols_fetched",
-            count=len(symbols),
-        )
-
-        if not symbols:
-            print("ERROR: No symbols returned from Finnhub")
-            logger.error("fundamentals_job.no_symbols")
+        if not universe or not universe.get("symbols"):
+            print("ERROR: No stock universe found in Redis!")
+            print("       Run the universe_job first to populate the universe.")
+            print("       kubectl create job --from=cronjob/universe-refresh universe-manual -n tokenomics")
+            logger.error("fundamentals_job.no_universe")
             return 1
 
-        # Create a mapping of symbol to company name
-        symbol_names = {s.symbol: s.description for s in symbols}
+        # Use universe from Redis (sorted by market cap)
+        symbol_list = universe["symbols"][:limit]
+        universe_age = store.get_universe_age_days()
+
+        print(f"Using stock universe from Redis:")
+        print(f"  Universe updated: {universe.get('updated_at')}")
+        print(f"  Universe age: {universe_age:.1f} days" if universe_age else "  Universe age: unknown")
+        print(f"  Total in universe: {universe.get('count')}")
+        print(f"  Using top {len(symbol_list)} by market cap")
+        print()
+
+        # No descriptions available from universe - use symbol as name
+        symbol_names = {s: s for s in symbol_list}
+
+        logger.info(
+            "fundamentals_job.using_universe",
+            universe_count=universe.get("count"),
+            using_count=len(symbol_list),
+            age_days=universe_age,
+        )
+
+        if not symbol_list:
+            print("ERROR: No symbols to process")
+            logger.error("fundamentals_job.no_symbols")
+            return 1
 
         # Step 2: Process each company
         # Rate limiting: 60 calls/minute = 1 call/second
@@ -316,7 +336,7 @@ def main() -> int:
         max_retries = 3
         cache_max_age_days = 7
 
-        print(f"Processing {len(symbols)} companies...")
+        print(f"Processing {len(symbol_list)} companies...")
         print(f"  Rate limit: {rate_limit_delay}s between calls ({int(60/rate_limit_delay)}/min)")
         print(f"  Retries: {max_retries} attempts, {retry_delay}s delay")
         print(f"  Cache: skip if data < {cache_max_age_days} days old")
@@ -330,9 +350,9 @@ def main() -> int:
         retry_count = 0
         cached_count = 0
 
-        for i, company in enumerate(symbols):
-            symbol = company.symbol
-            progress_pct = ((i + 1) / len(symbols)) * 100
+        for i, symbol in enumerate(symbol_list):
+            progress_pct = ((i + 1) / len(symbol_list)) * 100
+            company_name = symbol_names.get(symbol, symbol)
 
             # Check cache first - skip API call if data is fresh
             cached = store.get_cached_result(symbol)
@@ -342,7 +362,7 @@ def main() -> int:
 
                 result = CompanyResult(
                     symbol=symbol,
-                    name=company.description,
+                    name=company_name,
                     score=cached["score"],
                     roe=details.get("roe"),
                     debt_to_equity=details.get("debt_to_equity"),
@@ -372,7 +392,18 @@ def main() -> int:
                     financials = provider.get_basic_financials(symbol)
                     break  # Success, exit retry loop
 
+                except NoFinancialsDataError as e:
+                    # No data available for this symbol - don't retry
+                    last_error = e
+                    logger.debug(
+                        "fundamentals_job.no_data",
+                        symbol=symbol,
+                        error=str(e),
+                    )
+                    break  # Exit retry loop - retrying won't help
+
                 except FinancialsFetchError as e:
+                    # API error - may be transient, retry
                     last_error = e
                     if attempt < max_retries - 1:
                         retry_count += 1
@@ -412,7 +443,7 @@ def main() -> int:
                 # Track result
                 result = CompanyResult(
                     symbol=symbol,
-                    name=company.description,
+                    name=company_name,
                     score=score.composite_score,
                     roe=score.roe,
                     debt_to_equity=score.debt_to_equity,
@@ -443,7 +474,7 @@ def main() -> int:
                 results.append(
                     CompanyResult(
                         symbol=symbol,
-                        name=company.description,
+                        name=company_name,
                         score=0.0,
                         roe=None,
                         debt_to_equity=None,
@@ -463,10 +494,10 @@ def main() -> int:
                 elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                 api_calls = success_count + failed_count + no_data_count
                 # ETA based on remaining non-cached companies (estimate)
-                remaining = len(symbols) - i - 1
+                remaining = len(symbol_list) - i - 1
                 eta_minutes = remaining / 60 if api_calls > 0 else remaining
                 print(
-                    f"  [{progress_pct:5.1f}%] Processed {i + 1}/{len(symbols)} - "
+                    f"  [{progress_pct:5.1f}%] Processed {i + 1}/{len(symbol_list)} - "
                     f"Cached: {cached_count}, Success: {success_count}, Failed: {failed_count}, "
                     f"No Data: {no_data_count}, Retries: {retry_count} | ETA: {eta_minutes:.0f}min"
                 )
@@ -507,7 +538,7 @@ def main() -> int:
         logger.info(
             "fundamentals_job.completed",
             duration_seconds=round(duration, 2),
-            total_symbols=len(symbols),
+            total_symbols=len(symbol_list),
             cached=cached_count,
             success=success_count,
             failed=failed_count,

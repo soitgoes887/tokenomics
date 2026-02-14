@@ -24,11 +24,18 @@ class FundamentalsStore:
         - score_details: JSON blob of FundamentalsScore
         - updated: ISO timestamp
     - Sorted set: `fundamentals:scores` mapping symbol -> score for leaderboard
+    - Hash: `fundamentals:universe` containing:
+        - symbols: JSON list of top symbols by market cap
+        - updated_at: ISO timestamp
+        - count: number of symbols
+    - Sorted set: `fundamentals:universe:marketcap` mapping symbol -> market cap
     """
 
     # Key patterns
     KEY_PREFIX = "fundamentals"
     SCORES_KEY = "fundamentals:scores"
+    UNIVERSE_KEY = "fundamentals:universe"
+    UNIVERSE_MARKETCAP_KEY = "fundamentals:universe:marketcap"
 
     # TTL: 14 days (cronjob runs weekly, so 2x for safety)
     TTL_SECONDS = 14 * 24 * 60 * 60
@@ -358,3 +365,119 @@ class FundamentalsStore:
         """Close Redis connection."""
         self._client.close()
         logger.debug("fundamentals_store.closed")
+
+    # Universe methods (for monthly market cap ranking job)
+
+    def save_universe(
+        self,
+        symbols_with_marketcap: list[tuple[str, float]],
+    ) -> None:
+        """Save the stock universe (top companies by market cap).
+
+        Args:
+            symbols_with_marketcap: List of (symbol, market_cap) tuples,
+                                    already sorted by market cap descending
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        symbols = [s for s, _ in symbols_with_marketcap]
+
+        pipeline = self._client.pipeline()
+
+        # Save universe metadata
+        pipeline.delete(self.UNIVERSE_KEY)
+        pipeline.hset(self.UNIVERSE_KEY, mapping={
+            "symbols": json.dumps(symbols),
+            "updated_at": now,
+            "count": str(len(symbols)),
+        })
+        # Universe TTL: 45 days (job runs monthly, 1.5x for safety)
+        pipeline.expire(self.UNIVERSE_KEY, 45 * 24 * 60 * 60)
+
+        # Save market cap sorted set for lookups
+        pipeline.delete(self.UNIVERSE_MARKETCAP_KEY)
+        if symbols_with_marketcap:
+            marketcap_dict = {symbol: mcap for symbol, mcap in symbols_with_marketcap}
+            pipeline.zadd(self.UNIVERSE_MARKETCAP_KEY, marketcap_dict)
+            pipeline.expire(self.UNIVERSE_MARKETCAP_KEY, 45 * 24 * 60 * 60)
+
+        pipeline.execute()
+
+        logger.info(
+            "fundamentals_store.universe_saved",
+            count=len(symbols),
+            updated_at=now,
+        )
+
+    def get_universe(self) -> Optional[dict]:
+        """Get the stock universe metadata and symbols.
+
+        Returns:
+            Dict with 'symbols' (list), 'updated_at' (ISO string), 'count' (int)
+            or None if not found
+        """
+        data = self._client.hgetall(self.UNIVERSE_KEY)
+
+        if not data:
+            return None
+
+        return {
+            "symbols": json.loads(data.get("symbols", "[]")),
+            "updated_at": data.get("updated_at"),
+            "count": int(data.get("count", 0)),
+        }
+
+    def get_universe_symbols(self) -> list[str]:
+        """Get just the list of symbols from the universe.
+
+        Returns:
+            List of symbols or empty list if universe not set
+        """
+        symbols_json = self._client.hget(self.UNIVERSE_KEY, "symbols")
+        if not symbols_json:
+            return []
+        return json.loads(symbols_json)
+
+    def get_universe_age_days(self) -> Optional[float]:
+        """Get the age of the universe in days.
+
+        Returns:
+            Age in days or None if universe not set
+        """
+        updated_at = self._client.hget(self.UNIVERSE_KEY, "updated_at")
+        if not updated_at:
+            return None
+
+        try:
+            updated_dt = datetime.fromisoformat(updated_at)
+            age = datetime.now(timezone.utc) - updated_dt
+            return age.total_seconds() / (24 * 60 * 60)
+        except (ValueError, TypeError):
+            return None
+
+    def get_market_cap(self, symbol: str) -> Optional[float]:
+        """Get the market cap for a symbol from the universe.
+
+        Args:
+            symbol: Stock ticker symbol
+
+        Returns:
+            Market cap in millions or None if not found
+        """
+        return self._client.zscore(self.UNIVERSE_MARKETCAP_KEY, symbol)
+
+    def get_top_by_market_cap(self, limit: int = 100) -> list[tuple[str, float]]:
+        """Get top N companies by market cap from the universe.
+
+        Args:
+            limit: Number of top companies to return
+
+        Returns:
+            List of (symbol, market_cap) tuples sorted descending by market cap
+        """
+        results = self._client.zrevrange(
+            self.UNIVERSE_MARKETCAP_KEY,
+            0,
+            limit - 1,
+            withscores=True,
+        )
+        return [(symbol, mcap) for symbol, mcap in results]

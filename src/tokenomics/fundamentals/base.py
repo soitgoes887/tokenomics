@@ -41,6 +41,12 @@ class FinancialsProvider(ABC):
 
 
 class FinancialsFetchError(Exception):
-    """Raised when fetching financials data fails."""
+    """Raised when fetching financials data fails (retryable)."""
+
+    pass
+
+
+class NoFinancialsDataError(FinancialsFetchError):
+    """Raised when a symbol has no financials data available (not retryable)."""
 
     pass
