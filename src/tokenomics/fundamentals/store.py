@@ -2,7 +2,7 @@
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import redis
@@ -33,6 +33,9 @@ class FundamentalsStore:
     # TTL: 14 days (cronjob runs weekly, so 2x for safety)
     TTL_SECONDS = 14 * 24 * 60 * 60
 
+    # Cache freshness: 7 days
+    CACHE_FRESHNESS_DAYS = 7
+
     def __init__(self):
         """Initialize Redis connection from environment variables."""
         redis_host = os.getenv("REDIS_HOST", "localhost")
@@ -53,6 +56,68 @@ class FundamentalsStore:
             host=redis_host,
             port=redis_port,
         )
+
+    def is_fresh(self, symbol: str, max_age_days: int = None) -> bool:
+        """Check if cached data for a symbol is fresh (less than max_age_days old).
+
+        Args:
+            symbol: Stock ticker symbol
+            max_age_days: Maximum age in days (default: CACHE_FRESHNESS_DAYS)
+
+        Returns:
+            True if data exists and is fresh, False otherwise
+        """
+        if max_age_days is None:
+            max_age_days = self.CACHE_FRESHNESS_DAYS
+
+        key = f"{self.KEY_PREFIX}:{symbol}"
+        updated = self._client.hget(key, "updated")
+
+        if not updated:
+            return False
+
+        try:
+            updated_dt = datetime.fromisoformat(updated)
+            age = datetime.now(timezone.utc) - updated_dt
+            return age < timedelta(days=max_age_days)
+        except (ValueError, TypeError):
+            return False
+
+    def get_cached_result(self, symbol: str) -> Optional[dict]:
+        """Get cached score details for a symbol if fresh.
+
+        Args:
+            symbol: Stock ticker symbol
+
+        Returns:
+            Dict with score_details if fresh, None otherwise
+        """
+        key = f"{self.KEY_PREFIX}:{symbol}"
+        data = self._client.hmget(key, "updated", "score", "score_details")
+
+        if not data[0]:  # No updated timestamp
+            return None
+
+        try:
+            updated_dt = datetime.fromisoformat(data[0])
+            age = datetime.now(timezone.utc) - updated_dt
+
+            if age >= timedelta(days=self.CACHE_FRESHNESS_DAYS):
+                return None  # Data is stale
+
+            result = {
+                "updated": data[0],
+                "score": float(data[1]) if data[1] else 0.0,
+                "age_days": age.days,
+            }
+
+            if data[2]:
+                result["score_details"] = json.loads(data[2])
+
+            return result
+
+        except (ValueError, TypeError):
+            return None
 
     def save_company(
         self,

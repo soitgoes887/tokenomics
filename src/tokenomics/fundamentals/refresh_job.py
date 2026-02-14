@@ -178,20 +178,25 @@ def print_summary_table(results: list[CompanyResult]) -> None:
 
     # Summary statistics
     successful = [r for r in results if r.status == "success"]
+    cached = [r for r in results if r.status == "cached"]
     failed = [r for r in results if r.status == "failed"]
     no_data = [r for r in results if r.status == "no_data"]
 
-    if successful:
-        scores = [r.score for r in successful]
-        avg_score = sum(scores) / len(scores)
-        max_score = max(scores)
-        min_score = min(scores)
+    # Include both successful and cached in score stats
+    with_scores = [r for r in results if r.status in ("success", "cached", "no_data")]
+
+    if with_scores:
+        scores = [r.score for r in with_scores if r.score > 0]
+        avg_score = sum(scores) / len(scores) if scores else 0
+        max_score = max(scores) if scores else 0
+        min_score = min(scores) if scores else 0
 
         print(f"\nSTATISTICS:")
         print(f"  Total Processed:    {len(results)}")
-        print(f"  Successful:         {len(successful)}")
-        print(f"  Failed:             {len(failed)}")
+        print(f"  From Cache:         {len(cached)}")
+        print(f"  Fresh API Calls:    {len(successful)}")
         print(f"  No Data:            {len(no_data)}")
+        print(f"  Failed:             {len(failed)}")
         print(f"  Average Score:      {avg_score:.1f}")
         print(f"  Max Score:          {max_score:.1f}")
         print(f"  Min Score:          {min_score:.1f}")
@@ -303,7 +308,18 @@ def main() -> int:
         symbol_names = {s.symbol: s.description for s in symbols}
 
         # Step 2: Process each company
+        # Rate limiting: 60 calls/minute = 1 call/second
+        # Retry: up to 3 attempts with 2 second delay between retries
+        # Cache: skip API call if data is < 7 days old
+        rate_limit_delay = 1.0  # 1 second between calls (60/min)
+        retry_delay = 2.0  # 2 seconds between retries
+        max_retries = 3
+        cache_max_age_days = 7
+
         print(f"Processing {len(symbols)} companies...")
+        print(f"  Rate limit: {rate_limit_delay}s between calls ({int(60/rate_limit_delay)}/min)")
+        print(f"  Retries: {max_retries} attempts, {retry_delay}s delay")
+        print(f"  Cache: skip if data < {cache_max_age_days} days old")
         print("-" * 60)
 
         results: list[CompanyResult] = []
@@ -311,16 +327,83 @@ def main() -> int:
         success_count = 0
         failed_count = 0
         no_data_count = 0
+        retry_count = 0
+        cached_count = 0
 
         for i, company in enumerate(symbols):
             symbol = company.symbol
             progress_pct = ((i + 1) / len(symbols)) * 100
 
-            try:
-                # Fetch financials
-                financials = provider.get_basic_financials(symbol)
+            # Check cache first - skip API call if data is fresh
+            cached = store.get_cached_result(symbol)
+            if cached and cached.get("score_details"):
+                cached_count += 1
+                details = cached["score_details"]
 
-                # Calculate score
+                result = CompanyResult(
+                    symbol=symbol,
+                    name=company.description,
+                    score=cached["score"],
+                    roe=details.get("roe"),
+                    debt_to_equity=details.get("debt_to_equity"),
+                    revenue_growth=details.get("revenue_growth"),
+                    eps_growth=details.get("eps_growth"),
+                    status="cached",
+                )
+                results.append(result)
+
+                logger.debug(
+                    "fundamentals_job.cache_hit",
+                    symbol=symbol,
+                    score=cached["score"],
+                    age_days=cached.get("age_days"),
+                )
+
+                # No rate limit needed for cache hits
+                continue
+
+            # Retry loop for each company
+            financials = None
+            last_error = None
+
+            for attempt in range(max_retries):
+                try:
+                    # Fetch financials
+                    financials = provider.get_basic_financials(symbol)
+                    break  # Success, exit retry loop
+
+                except FinancialsFetchError as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        retry_count += 1
+                        logger.warning(
+                            "fundamentals_job.retry",
+                            symbol=symbol,
+                            attempt=attempt + 1,
+                            max_retries=max_retries,
+                            error=str(e),
+                        )
+                        print(f"    Retry {attempt + 1}/{max_retries} for {symbol}: {e}")
+                        time.sleep(retry_delay)
+                    else:
+                        logger.warning(
+                            "fundamentals_job.max_retries_exceeded",
+                            symbol=symbol,
+                            error=str(e),
+                        )
+
+                except Exception as e:
+                    last_error = e
+                    logger.error(
+                        "fundamentals_job.unexpected_error",
+                        symbol=symbol,
+                        error=str(e),
+                        exc_info=True,
+                    )
+                    break  # Don't retry unexpected errors
+
+            if financials is not None:
+                # Success - calculate score
                 score = scorer.calculate_score(financials)
 
                 # Add to batch for Redis
@@ -354,27 +437,8 @@ def main() -> int:
                     growth=score.revenue_growth,
                     has_data=score.has_sufficient_data,
                 )
-
-                # Print progress every 50 companies
-                if (i + 1) % 50 == 0:
-                    print(
-                        f"  [{progress_pct:5.1f}%] Processed {i + 1}/{len(symbols)} - "
-                        f"Success: {success_count}, Failed: {failed_count}, No Data: {no_data_count}"
-                    )
-
-                # Save batch to Redis when full
-                if len(batch) >= batch_size:
-                    store.save_batch(batch)
-                    logger.debug(
-                        "fundamentals_job.batch_saved",
-                        batch_size=len(batch),
-                    )
-                    batch = []
-
-                # Rate limiting: ~20 requests per second (staying under 30/sec limit)
-                time.sleep(0.05)
-
-            except FinancialsFetchError as e:
+            else:
+                # Failed after all retries
                 failed_count += 1
                 results.append(
                     CompanyResult(
@@ -391,29 +455,33 @@ def main() -> int:
                 logger.warning(
                     "fundamentals_job.company_failed",
                     symbol=symbol,
-                    error=str(e),
+                    error=str(last_error) if last_error else "Unknown error",
                 )
 
-            except Exception as e:
-                failed_count += 1
-                results.append(
-                    CompanyResult(
-                        symbol=symbol,
-                        name=company.description,
-                        score=0.0,
-                        roe=None,
-                        debt_to_equity=None,
-                        revenue_growth=None,
-                        eps_growth=None,
-                        status="failed",
-                    )
+            # Print progress every 50 companies
+            if (i + 1) % 50 == 0:
+                elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                api_calls = success_count + failed_count + no_data_count
+                # ETA based on remaining non-cached companies (estimate)
+                remaining = len(symbols) - i - 1
+                eta_minutes = remaining / 60 if api_calls > 0 else remaining
+                print(
+                    f"  [{progress_pct:5.1f}%] Processed {i + 1}/{len(symbols)} - "
+                    f"Cached: {cached_count}, Success: {success_count}, Failed: {failed_count}, "
+                    f"No Data: {no_data_count}, Retries: {retry_count} | ETA: {eta_minutes:.0f}min"
                 )
-                logger.error(
-                    "fundamentals_job.company_error",
-                    symbol=symbol,
-                    error=str(e),
-                    exc_info=True,
+
+            # Save batch to Redis when full
+            if len(batch) >= batch_size:
+                store.save_batch(batch)
+                logger.debug(
+                    "fundamentals_job.batch_saved",
+                    batch_size=len(batch),
                 )
+                batch = []
+
+            # Rate limiting: 1 request per second (60/min limit)
+            time.sleep(rate_limit_delay)
 
         # Save any remaining items in batch
         if batch:
@@ -440,9 +508,11 @@ def main() -> int:
             "fundamentals_job.completed",
             duration_seconds=round(duration, 2),
             total_symbols=len(symbols),
+            cached=cached_count,
             success=success_count,
             failed=failed_count,
             no_data=no_data_count,
+            retries=retry_count,
             total_in_store=total_in_store,
             top_10=[(s, round(score, 1)) for s, score in top_companies],
         )
