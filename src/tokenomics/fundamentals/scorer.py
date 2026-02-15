@@ -163,6 +163,11 @@ class FundamentalsScorer:
         if debt_to_equity is None:
             return 50.0  # Neutral if missing
 
+        # Treat exactly 0 as likely missing/unreliable data
+        # Real companies rarely have exactly 0 debt
+        if debt_to_equity == 0:
+            return 50.0  # Neutral
+
         # Invert: lower debt is better
         # First normalize, then invert
         normalized = self._normalize(debt_to_equity, self._debt_min, self._debt_max)
