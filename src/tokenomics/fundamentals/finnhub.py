@@ -49,10 +49,24 @@ class FinnhubFinancialsProvider(FinancialsProvider):
         self._max_retries = 3
         self._retry_delay_base = 2.0
 
+    # Major US exchange MIC codes (exclude OTC/pink sheets)
+    MAJOR_US_EXCHANGES = {
+        "XNYS",  # New York Stock Exchange (NYSE)
+        "XNAS",  # NASDAQ
+        "XASE",  # NYSE American (formerly AMEX)
+        "ARCX",  # NYSE Arca
+        "BATS",  # BATS Exchange
+        "IEXG",  # IEX Exchange
+        "XNMS",  # NASDAQ Global Market
+        "XNCM",  # NASDAQ Capital Market
+        "XNGS",  # NASDAQ Global Select
+    }
+
     def get_us_symbols(self, limit: int = 1250) -> list[CompanySymbol]:
         """Fetch US stock symbols from Finnhub.
 
-        Filters to Common Stock type and returns up to `limit` symbols.
+        Filters to Common Stock type on major US exchanges (NYSE, NASDAQ)
+        and returns up to `limit` symbols. Excludes OTC/pink sheet stocks.
 
         Args:
             limit: Maximum number of symbols to return (default 1250)
@@ -71,7 +85,7 @@ class FinnhubFinancialsProvider(FinancialsProvider):
             if not response:
                 raise FinancialsFetchError("No symbols returned from Finnhub")
 
-            # Filter to Common Stock only and take first `limit`
+            # Filter to Common Stock on major exchanges only (exclude OTC/pink sheets)
             common_stocks = [
                 CompanySymbol(
                     symbol=item.get("symbol", ""),
@@ -83,6 +97,7 @@ class FinnhubFinancialsProvider(FinancialsProvider):
                 for item in response
                 if item.get("type") == "Common Stock"
                 and item.get("symbol")
+                and item.get("mic") in self.MAJOR_US_EXCHANGES
                 and not self._is_special_symbol(
                     item.get("symbol", ""),
                     item.get("description", "")

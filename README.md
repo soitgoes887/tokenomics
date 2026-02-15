@@ -6,7 +6,7 @@ Algorithmic trading system that uses fundamental analysis to manage a score-weig
 
 The system runs as three Kubernetes CronJobs:
 
-1. **Universe Job** (Monthly) — Fetches top 1,500 US stocks by market cap from Finnhub
+1. **Universe Job** (Monthly) — Fetches top 1,500 US stocks by market cap from Finnhub (NYSE/NASDAQ only, excludes OTC)
 2. **Fundamentals Job** (Weekly) — Calculates composite quality scores (ROE, Debt, Growth)
 3. **Rebalancing Engine** (Weekly) — Trades to match score-weighted target portfolio
 
@@ -40,7 +40,7 @@ The system runs as three Kubernetes CronJobs:
 │   │  Schedule:          │    │  Schedule:          │    │  Schedule:          │        │
 │   │  1st of month 01:00 │    │  Monday 02:00 UTC   │    │  Monday 15:00 UTC   │        │
 │   │                     │    │                     │    │  (30min after open) │        │
-│   │  Duration: ~25 hrs  │    │  Duration: ~16 hrs  │    │  Duration: ~5 min   │        │
+│   │  Duration: ~3 hrs   │    │  Duration: ~16 hrs  │    │  Duration: ~5 min   │        │
 │   └──────────┬──────────┘    └──────────┬──────────┘    └──────────┬──────────┘        │
 │              │                          │                          │                   │
 │   KUBERNETES CRONJOBS                   │                          │                   │
@@ -97,7 +97,7 @@ The system runs as three Kubernetes CronJobs:
   └────┬────┘                    └─────┬─────┘                         └──────┬──────┘
        │                               │                                      │
        │  1. Fetch all US symbols      │  1. Read universe from Redis         │  1. Load scores
-       │     from Finnhub              │  2. For each symbol:                 │  2. Compute weights
+       │     from Finnhub (NYSE/NASDAQ)│  2. For each symbol:                 │  2. Compute weights
        │  2. Get market cap each       │     - Check cache (skip if fresh)    │  3. Get current holdings
        │  3. Sort by market cap        │     - Fetch financials               │  4. Generate trades
        │  4. Save top 1500             │     - Calculate score                │  5. Execute orders
@@ -292,7 +292,7 @@ All parameters are in `config/settings.yaml`:
 
 | Job | Schedule | Time (UTC) | Duration |
 |-----|----------|------------|----------|
-| Universe | `0 1 1 * *` | 1st of month, 01:00 | ~25 hours |
+| Universe | `0 1 1 * *` | 1st of month, 01:00 | ~3 hours |
 | Fundamentals | `0 2 * * 1` | Monday, 02:00 | ~16 hours |
 | Rebalancer | `0 15 * * 1` | Monday, 15:00 | ~5 minutes |
 
