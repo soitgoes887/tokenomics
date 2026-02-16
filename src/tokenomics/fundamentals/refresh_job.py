@@ -110,6 +110,7 @@ class CompanyResult:
     revenue_growth: Optional[float]
     eps_growth: Optional[float]
     status: str  # "success", "failed", "no_data"
+    previous_score: Optional[float] = None  # Score before this update
 
 
 def format_pct(value: Optional[float]) -> str:
@@ -382,6 +383,9 @@ def main() -> int:
                 # No rate limit needed for cache hits
                 continue
 
+            # Get previous score before updating
+            previous_score = store.get_score(symbol)
+
             # Retry loop for each company
             financials = None
             last_error = None
@@ -450,6 +454,7 @@ def main() -> int:
                     revenue_growth=score.revenue_growth,
                     eps_growth=score.eps_growth,
                     status="success" if score.has_sufficient_data else "no_data",
+                    previous_score=previous_score,
                 )
                 results.append(result)
 
@@ -551,6 +556,31 @@ def main() -> int:
         # Print the summary table
         print_summary_table(results)
 
+        # Show what was updated in this run
+        updated_results = [r for r in results if r.status == "success"]
+        if updated_results:
+            # Sort by score descending
+            updated_results.sort(key=lambda x: x.score, reverse=True)
+            print()
+            print("=" * 70)
+            print(f"UPDATED THIS RUN: {len(updated_results)} companies")
+            print("=" * 70)
+            print(f"{'Symbol':<8} {'Score':>8} {'Prev':>8} {'Change':>8} {'ROE':>10} {'D/E':>10}")
+            print("-" * 70)
+            for r in updated_results[:30]:  # Show top 30
+                roe_str = f"{r.roe:.1f}%" if r.roe is not None else "N/A"
+                de_str = f"{r.debt_to_equity:.2f}" if r.debt_to_equity is not None else "N/A"
+                prev_str = f"{r.previous_score:.1f}" if r.previous_score is not None else "NEW"
+                if r.previous_score is not None:
+                    change = r.score - r.previous_score
+                    change_str = f"{change:+.1f}"
+                else:
+                    change_str = "-"
+                print(f"{r.symbol:<8} {r.score:>8.1f} {prev_str:>8} {change_str:>8} {roe_str:>10} {de_str:>10}")
+            if len(updated_results) > 30:
+                print(f"... and {len(updated_results) - 30} more")
+            print()
+
         # Final job summary
         print("JOB SUMMARY")
         print("=" * 60)
@@ -558,6 +588,12 @@ def main() -> int:
         print(f"  End Time:           {end_time.isoformat()}")
         print(f"  Duration:           {duration_minutes:.1f} minutes ({duration:.0f} seconds)")
         print(f"  Companies in Redis: {total_in_store}")
+        print()
+        print(f"  THIS RUN:")
+        print(f"    Updated (fresh):  {success_count}")
+        print(f"    Skipped (cached): {cached_count}")
+        print(f"    No data:          {no_data_count}")
+        print(f"    Failed:           {failed_count}")
         print()
         print("Job completed successfully!")
         print("=" * 60)
