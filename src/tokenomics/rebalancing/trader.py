@@ -20,8 +20,8 @@ class Trade:
 
     symbol: str
     side: TradeSide
-    shares: int
-    notional_usd: float
+    shares: float  # Estimated shares (may be fractional)
+    notional_usd: float  # Dollar amount to trade
     current_weight: float
     target_weight: float
     reason: str
@@ -113,12 +113,9 @@ def generate_trades(
             skipped_count += 1
             continue
 
-        # Calculate shares (round down for buys, up for sells to be conservative)
-        shares = int(abs(delta_usd) / price)
-
-        if shares == 0:
-            skipped_count += 1
-            continue
+        # Calculate estimated shares (fractional) for display purposes
+        # The actual order will use notional (dollar) amount
+        estimated_shares = abs(delta_usd) / price
 
         if delta_weight > 0:
             # BUY
@@ -129,8 +126,8 @@ def generate_trades(
             trade = Trade(
                 symbol=symbol,
                 side=TradeSide.BUY,
-                shares=shares,
-                notional_usd=shares * price,
+                shares=round(estimated_shares, 4),
+                notional_usd=round(abs(delta_usd), 2),
                 current_weight=current_weight,
                 target_weight=target_weight,
                 reason=reason,
@@ -140,8 +137,8 @@ def generate_trades(
             logger.info(
                 "trader.buy_order",
                 symbol=symbol,
-                shares=shares,
-                notional_usd=round(shares * price, 2),
+                shares=round(estimated_shares, 4),
+                notional_usd=round(abs(delta_usd), 2),
                 reason=reason,
             )
         else:
@@ -153,8 +150,8 @@ def generate_trades(
             trade = Trade(
                 symbol=symbol,
                 side=TradeSide.SELL,
-                shares=shares,
-                notional_usd=shares * price,
+                shares=round(estimated_shares, 4),
+                notional_usd=round(abs(delta_usd), 2),
                 current_weight=current_weight,
                 target_weight=target_weight,
                 reason=reason,
@@ -164,8 +161,8 @@ def generate_trades(
             logger.info(
                 "trader.sell_order",
                 symbol=symbol,
-                shares=shares,
-                notional_usd=round(shares * price, 2),
+                shares=round(estimated_shares, 4),
+                notional_usd=round(abs(delta_usd), 2),
                 reason=reason,
             )
 

@@ -170,6 +170,139 @@ class AlpacaBrokerProvider(BrokerProvider):
             raise OrderError(f"Buy order failed for {symbol}: {e}") from e
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    def submit_buy_order_notional(self, symbol: str, notional_usd: float) -> str:
+        """Submit a market buy order by dollar amount (supports fractional shares).
+
+        Args:
+            symbol: Stock symbol
+            notional_usd: Dollar amount to invest
+
+        Returns:
+            Order ID
+        """
+        try:
+            request = MarketOrderRequest(
+                symbol=symbol,
+                notional=round(notional_usd, 2),
+                side=OrderSide.BUY,
+                time_in_force=self._time_in_force(symbol),
+            )
+
+            order = self._client.submit_order(request)
+
+            logger.info(
+                "broker.order_submitted",
+                order_id=str(order.id),
+                symbol=symbol,
+                notional_usd=round(notional_usd, 2),
+                side="BUY",
+            )
+
+            return str(order.id)
+
+        except Exception as e:
+            # Fall back to whole shares if not fractionable
+            if "not fractionable" in str(e).lower():
+                return self._submit_whole_share_buy_notional(symbol, notional_usd)
+            logger.error(
+                "broker.order_failed",
+                symbol=symbol,
+                error=str(e),
+            )
+            raise OrderError(f"Buy order failed for {symbol}: {e}") from e
+
+    def _submit_whole_share_buy_notional(self, symbol: str, notional_usd: float) -> str:
+        """Fall back to whole-share buy when asset is not fractionable."""
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestTradeRequest
+
+        try:
+            data_client = StockHistoricalDataClient(
+                api_key=self._api_key,
+                secret_key=self._secret_key,
+            )
+            trade = data_client.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=symbol)
+            )
+            price = float(trade[symbol].price)
+
+            qty = math.floor(notional_usd / price)
+            if qty < 1:
+                raise OrderError(
+                    f"Cannot buy {symbol}: price ${price:.2f} exceeds "
+                    f"notional ${notional_usd:.2f}"
+                )
+
+            request = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=self._time_in_force(symbol),
+            )
+
+            order = self._client.submit_order(request)
+
+            logger.info(
+                "broker.order_submitted",
+                order_id=str(order.id),
+                symbol=symbol,
+                qty=qty,
+                side="BUY",
+                fallback="whole_share",
+            )
+
+            return str(order.id)
+
+        except OrderError:
+            raise
+        except Exception as e:
+            logger.error(
+                "broker.order_failed",
+                symbol=symbol,
+                error=str(e),
+            )
+            raise OrderError(f"Buy order failed for {symbol}: {e}") from e
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    def submit_sell_order_notional(self, symbol: str, notional_usd: float) -> str:
+        """Submit a market sell order by dollar amount (supports fractional shares).
+
+        Args:
+            symbol: Stock symbol
+            notional_usd: Dollar amount to sell
+
+        Returns:
+            Order ID
+        """
+        try:
+            request = MarketOrderRequest(
+                symbol=symbol,
+                notional=round(notional_usd, 2),
+                side=OrderSide.SELL,
+                time_in_force=self._time_in_force(symbol),
+            )
+
+            order = self._client.submit_order(request)
+
+            logger.info(
+                "broker.order_submitted",
+                order_id=str(order.id),
+                symbol=symbol,
+                notional_usd=round(notional_usd, 2),
+                side="SELL",
+            )
+
+            return str(order.id)
+
+        except Exception as e:
+            logger.error(
+                "broker.sell_failed",
+                symbol=symbol,
+                error=str(e),
+            )
+            raise OrderError(f"Sell order failed for {symbol}: {e}") from e
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     def submit_sell_order(self, symbol: str, quantity: float) -> str:
         """Submit a market sell order to close a position. Returns order ID."""
         try:

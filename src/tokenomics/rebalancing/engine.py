@@ -170,13 +170,14 @@ class RebalancingEngine:
             # Execute sells first to free up capital
             for trade in trades.sells:
                 try:
-                    print(f"  SELL {trade.shares} {trade.symbol} (~${trade.notional_usd:,.0f}) - {trade.reason}")
-                    order_id = self._broker.submit_sell_order(trade.symbol, trade.shares)
+                    print(f"  SELL ~{trade.shares:.2f} {trade.symbol} (${trade.notional_usd:,.0f}) - {trade.reason}")
+                    order_id = self._broker.submit_sell_order_notional(trade.symbol, trade.notional_usd)
                     logger.info(
                         "rebalancer.order_executed",
                         side="sell",
                         symbol=trade.symbol,
                         shares=trade.shares,
+                        notional_usd=trade.notional_usd,
                         order_id=order_id,
                     )
                     executed_sells += 1
@@ -190,16 +191,17 @@ class RebalancingEngine:
                     )
                     failed += 1
 
-            # Execute buys
+            # Execute buys (using notional orders for fractional share support)
             for trade in trades.buys:
                 try:
-                    print(f"  BUY {trade.shares} {trade.symbol} (~${trade.notional_usd:,.0f}) - {trade.reason}")
-                    order_id = self._broker.submit_buy_order_qty(trade.symbol, trade.shares)
+                    print(f"  BUY ~{trade.shares:.2f} {trade.symbol} (${trade.notional_usd:,.0f}) - {trade.reason}")
+                    order_id = self._broker.submit_buy_order_notional(trade.symbol, trade.notional_usd)
                     logger.info(
                         "rebalancer.order_executed",
                         side="buy",
                         symbol=trade.symbol,
                         shares=trade.shares,
+                        notional_usd=trade.notional_usd,
                         order_id=order_id,
                     )
                     executed_buys += 1
