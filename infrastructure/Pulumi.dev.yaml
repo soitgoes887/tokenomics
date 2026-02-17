@@ -8,15 +8,17 @@ config:
 
 
 
+
+
       {"news": "alpaca", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
       {"news": "finnhub", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
       {"news": "marketaux", "llm": "perplexity-sonar", "broker": "alpaca-paper"}
     ]
 
   tokenomics:alpaca_api_key:
-    secure: AAABAIcUzgBfAtZct9cKpaaO8IxaMHfRhre5FBB704njroFHgrXzgoWrVGeN0sU14VMJpEB8onHgMQ==
+    secure: AAABAHzReBfVdTZiHtAyK2bMM7+tB+iCLt9YPL53pnveS9OL3FqFnJbgxkLVZx8bCKt+VmPzu7d5Rw==
   tokenomics:alpaca_secret_key:
-    secure: AAABAPYOY3CmqjDWp4nqt1J9xe8OLOrD/O0abDOm54jYDkX/SxNDsUVt/v6dk2vgfRT5GBPJcIbtoLc4yEtX3Qv8X/4z6AVY1jj9LQ==
+    secure: AAABAPCV7EsSz82nlAWDJIgLCiFjtamS3JmdSjTZbFMwMH2IwXrjGWfS8Pp47DO3RaFdjJOxKmyTHZRqv9we+wTX2se1qoiLPHgrmA==
   tokenomics:gemini_api_key:
     secure: AAABAK1oKlTu3/kkJAD9jZa2eKj2rM47/QX0O/ATWjViT+IFQwdJOLvV4Nb7+U0VIutC8CkNpCwX/mjANHjn9H9xYGKCQ6I=
   tokenomics:finnhub_api_key:
