@@ -36,6 +36,11 @@ scoring_profiles:
     alpaca_api_key_env: "ALPACA_API_KEY_V3"
     alpaca_secret_key_env: "ALPACA_SECRET_KEY_V3"
     description: "4-factor composite (Value/Quality/Momentum/LowVol)"
+    scorer_kwargs:
+      value_weight: 0.30
+      quality_weight: 0.40
+      momentum_weight: 0.20
+      lowvol_weight: 0.10
 
   default_profile: "tokenomics_v2_base"
 

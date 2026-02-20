@@ -113,6 +113,12 @@ class CompanyResult:
     status: str  # "success", "failed", "no_data"
     previous_score: Optional[float] = None  # Score before this update
 
+    # v3 composite sub-scores
+    value_score: Optional[float] = None
+    quality_score: Optional[float] = None
+    momentum_score: Optional[float] = None
+    lowvol_score: Optional[float] = None
+
 
 def format_pct(value: Optional[float]) -> str:
     """Format a percentage value for display."""
@@ -137,27 +143,46 @@ def print_summary_table(results: list[CompanyResult]) -> None:
     """Print a formatted table of all company results to stdout.
 
     This will be visible in kubectl logs for the cronjob.
+    Detects v3 composite sub-scores and shows the appropriate columns.
     """
     # Sort by score descending
     sorted_results = sorted(results, key=lambda x: x.score, reverse=True)
 
-    # Table header
-    header = (
-        f"{'Rank':<6} "
-        f"{'Symbol':<8} "
-        f"{'Company Name':<35} "
-        f"{'Score':>8} "
-        f"{'ROE':>10} "
-        f"{'D/E Ratio':>10} "
-        f"{'Rev Grth':>10} "
-        f"{'EPS Grth':>10} "
-        f"{'Status':<10}"
-    )
+    # Detect if this is a v3 run (any result has composite sub-scores)
+    is_v3 = any(r.value_score is not None for r in results)
+
+    if is_v3:
+        header = (
+            f"{'Rank':<6} "
+            f"{'Symbol':<8} "
+            f"{'Company Name':<35} "
+            f"{'Score':>8} "
+            f"{'Value':>8} "
+            f"{'Quality':>8} "
+            f"{'Momntm':>8} "
+            f"{'LowVol':>8} "
+            f"{'Status':<10}"
+        )
+    else:
+        header = (
+            f"{'Rank':<6} "
+            f"{'Symbol':<8} "
+            f"{'Company Name':<35} "
+            f"{'Score':>8} "
+            f"{'ROE':>10} "
+            f"{'D/E Ratio':>10} "
+            f"{'Rev Grth':>10} "
+            f"{'EPS Grth':>10} "
+            f"{'Status':<10}"
+        )
     separator = "=" * len(header)
 
     print("\n")
     print(separator)
-    print("FUNDAMENTALS ANALYSIS SUMMARY")
+    if is_v3:
+        print("COMPOSITE SCORING SUMMARY (Value/Quality/Momentum/LowVol)")
+    else:
+        print("FUNDAMENTALS ANALYSIS SUMMARY")
     print(separator)
     print(header)
     print("-" * len(header))
@@ -166,17 +191,30 @@ def print_summary_table(results: list[CompanyResult]) -> None:
         # Truncate company name if too long
         name = result.name[:33] + ".." if len(result.name) > 35 else result.name
 
-        row = (
-            f"{rank:<6} "
-            f"{result.symbol:<8} "
-            f"{name:<35} "
-            f"{format_score(result.score):>8} "
-            f"{format_pct(result.roe):>10} "
-            f"{format_ratio(result.debt_to_equity):>10} "
-            f"{format_pct(result.revenue_growth):>10} "
-            f"{format_pct(result.eps_growth):>10} "
-            f"{result.status:<10}"
-        )
+        if is_v3:
+            row = (
+                f"{rank:<6} "
+                f"{result.symbol:<8} "
+                f"{name:<35} "
+                f"{format_score(result.score):>8} "
+                f"{format_score(result.value_score) if result.value_score is not None else 'N/A':>8} "
+                f"{format_score(result.quality_score) if result.quality_score is not None else 'N/A':>8} "
+                f"{format_score(result.momentum_score) if result.momentum_score is not None else 'N/A':>8} "
+                f"{format_score(result.lowvol_score) if result.lowvol_score is not None else 'N/A':>8} "
+                f"{result.status:<10}"
+            )
+        else:
+            row = (
+                f"{rank:<6} "
+                f"{result.symbol:<8} "
+                f"{name:<35} "
+                f"{format_score(result.score):>8} "
+                f"{format_pct(result.roe):>10} "
+                f"{format_ratio(result.debt_to_equity):>10} "
+                f"{format_pct(result.revenue_growth):>10} "
+                f"{format_pct(result.eps_growth):>10} "
+                f"{result.status:<10}"
+            )
         print(row)
 
     print(separator)
@@ -307,7 +345,7 @@ def main() -> int:
         # Initialize components
         print("Initializing providers...")
         provider = FinnhubFinancialsProvider(secrets)
-        scorer = create_scorer(profile.scorer_class)
+        scorer = create_scorer(profile.scorer_class, **profile.scorer_kwargs)
         print("  Finnhub provider: OK")
         print(f"  Scorer: {profile.scorer_class} OK")
 
@@ -400,6 +438,10 @@ def main() -> int:
                     revenue_growth=details.get("revenue_growth"),
                     eps_growth=details.get("eps_growth"),
                     status="cached",
+                    value_score=details.get("value_score"),
+                    quality_score=details.get("quality_score"),
+                    momentum_score=details.get("momentum_score"),
+                    lowvol_score=details.get("lowvol_score"),
                 )
                 results.append(result)
 
@@ -524,6 +566,10 @@ def main() -> int:
                     eps_growth=score.eps_growth,
                     status="success" if score.has_sufficient_data else "no_data",
                     previous_score=previous_score,
+                    value_score=score.value_score,
+                    quality_score=score.quality_score,
+                    momentum_score=score.momentum_score,
+                    lowvol_score=score.lowvol_score,
                 )
                 results.append(result)
 
@@ -587,25 +633,46 @@ def main() -> int:
 
         # Show what was updated in this run
         updated_results = [r for r in results if r.status == "success"]
+        is_v3 = any(r.value_score is not None for r in results)
+
         if updated_results:
             # Sort by score descending
             updated_results.sort(key=lambda x: x.score, reverse=True)
             print()
-            print("=" * 70)
-            print(f"UPDATED THIS RUN: {len(updated_results)} companies")
-            print("=" * 70)
-            print(f"{'Symbol':<8} {'Score':>8} {'Prev':>8} {'Change':>8} {'ROE':>10} {'D/E':>10}")
-            print("-" * 70)
-            for r in updated_results[:30]:  # Show top 30
-                roe_str = f"{r.roe:.1f}%" if r.roe is not None else "N/A"
-                de_str = f"{r.debt_to_equity:.2f}" if r.debt_to_equity is not None else "N/A"
-                prev_str = f"{r.previous_score:.1f}" if r.previous_score is not None else "NEW"
-                if r.previous_score is not None:
-                    change = r.score - r.previous_score
-                    change_str = f"{change:+.1f}"
-                else:
-                    change_str = "-"
-                print(f"{r.symbol:<8} {r.score:>8.1f} {prev_str:>8} {change_str:>8} {roe_str:>10} {de_str:>10}")
+            if is_v3:
+                print("=" * 86)
+                print(f"UPDATED THIS RUN: {len(updated_results)} companies")
+                print("=" * 86)
+                print(f"{'Symbol':<8} {'Score':>8} {'Prev':>8} {'Change':>8} {'Value':>8} {'Quality':>8} {'Momntm':>8} {'LowVol':>8}")
+                print("-" * 86)
+                for r in updated_results[:30]:  # Show top 30
+                    prev_str = f"{r.previous_score:.1f}" if r.previous_score is not None else "NEW"
+                    if r.previous_score is not None:
+                        change = r.score - r.previous_score
+                        change_str = f"{change:+.1f}"
+                    else:
+                        change_str = "-"
+                    val_str = f"{r.value_score:.1f}" if r.value_score is not None else "N/A"
+                    qual_str = f"{r.quality_score:.1f}" if r.quality_score is not None else "N/A"
+                    mom_str = f"{r.momentum_score:.1f}" if r.momentum_score is not None else "N/A"
+                    lvol_str = f"{r.lowvol_score:.1f}" if r.lowvol_score is not None else "N/A"
+                    print(f"{r.symbol:<8} {r.score:>8.1f} {prev_str:>8} {change_str:>8} {val_str:>8} {qual_str:>8} {mom_str:>8} {lvol_str:>8}")
+            else:
+                print("=" * 70)
+                print(f"UPDATED THIS RUN: {len(updated_results)} companies")
+                print("=" * 70)
+                print(f"{'Symbol':<8} {'Score':>8} {'Prev':>8} {'Change':>8} {'ROE':>10} {'D/E':>10}")
+                print("-" * 70)
+                for r in updated_results[:30]:  # Show top 30
+                    roe_str = f"{r.roe:.1f}%" if r.roe is not None else "N/A"
+                    de_str = f"{r.debt_to_equity:.2f}" if r.debt_to_equity is not None else "N/A"
+                    prev_str = f"{r.previous_score:.1f}" if r.previous_score is not None else "NEW"
+                    if r.previous_score is not None:
+                        change = r.score - r.previous_score
+                        change_str = f"{change:+.1f}"
+                    else:
+                        change_str = "-"
+                    print(f"{r.symbol:<8} {r.score:>8.1f} {prev_str:>8} {change_str:>8} {roe_str:>10} {de_str:>10}")
             if len(updated_results) > 30:
                 print(f"... and {len(updated_results) - 30} more")
             print()

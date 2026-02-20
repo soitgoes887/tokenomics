@@ -24,10 +24,10 @@ class CompositeScorer(BaseScorer):
 
     def __init__(
         self,
-        value_weight: float = 0.25,
-        quality_weight: float = 0.25,
-        momentum_weight: float = 0.25,
-        lowvol_weight: float = 0.25,
+        value_weight: float = 0.30,
+        quality_weight: float = 0.40,
+        momentum_weight: float = 0.20,
+        lowvol_weight: float = 0.10,
     ):
         self._weights = {
             "value": value_weight,

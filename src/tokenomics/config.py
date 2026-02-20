@@ -75,6 +75,7 @@ class ScoringProfileConfig(BaseModel):
     alpaca_api_key_env: str
     alpaca_secret_key_env: str
     description: str = ""
+    scorer_kwargs: dict[str, float] = Field(default_factory=dict)
 
 
 class ScoringProfilesConfig(BaseModel):
