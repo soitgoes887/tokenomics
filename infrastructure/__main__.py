@@ -11,6 +11,8 @@ image = os.environ.get("IMAGE_TAG", config.get("image") or "anicu/tokenomics:lat
 namespace_name = config.get("namespace") or "tokenomics"
 alpaca_api_key = config.require_secret("alpaca_api_key")
 alpaca_secret_key = config.require_secret("alpaca_secret_key")
+alpaca_api_key_v3 = config.require_secret("alpaca_api_key_v3")
+alpaca_secret_key_v3 = config.require_secret("alpaca_secret_key_v3")
 gemini_api_key = config.require_secret("gemini_api_key")
 finnhub_api_key = config.require_secret("finnhub_api_key")
 perplexity_api_key = config.require_secret("perplexity_api_key")
@@ -36,6 +38,23 @@ rebalancing:
   min_score: 50.0
   rebalance_threshold_pct: 20.0
   min_trade_usd: 100.0
+
+scoring_profiles:
+  tokenomics_v2_base:
+    scorer_class: "FundamentalsScorer"
+    redis_namespace: "fundamentals:v2_base"
+    alpaca_api_key_env: "ALPACA_API_KEY"
+    alpaca_secret_key_env: "ALPACA_SECRET_KEY"
+    description: "Original 3-factor scorer (ROE/Debt/Growth)"
+
+  tokenomics_v3_composite:
+    scorer_class: "CompositeScorer"
+    redis_namespace: "fundamentals:v3_composite"
+    alpaca_api_key_env: "ALPACA_API_KEY_V3"
+    alpaca_secret_key_env: "ALPACA_SECRET_KEY_V3"
+    description: "Extended composite scorer (placeholder)"
+
+  default_profile: "tokenomics_v2_base"
 
 trading:
   paper: true
@@ -74,7 +93,7 @@ redis_secret_copy = k8s.core.v1.Secret(
     data=redis_secret_data.data,
 )
 
-# Shared secret (all profiles use the same API keys)
+# Shared secret (all profiles' Alpaca keys + shared API keys)
 secret = k8s.core.v1.Secret(
     "tokenomics-secrets",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -84,6 +103,8 @@ secret = k8s.core.v1.Secret(
     string_data={
         "ALPACA_API_KEY": alpaca_api_key,
         "ALPACA_SECRET_KEY": alpaca_secret_key,
+        "ALPACA_API_KEY_V3": alpaca_api_key_v3,
+        "ALPACA_SECRET_KEY_V3": alpaca_secret_key_v3,
         "GEMINI_API_KEY": gemini_api_key,
         "FINNHUB_API_KEY": finnhub_api_key,
         "PERPLEXITY_API_KEY": perplexity_api_key,
@@ -101,181 +122,219 @@ rebalancer_configmap = k8s.core.v1.ConfigMap(
     data={"settings.yaml": REBALANCER_SETTINGS},
 )
 
-# Portfolio Rebalancer CronJob - runs weekly to rebalance portfolio based on scores
-# Runs Monday at 3PM UTC (30 min after US market opens at 14:30 UTC)
-rebalancer_cronjob = k8s.batch.v1.CronJob(
-    "rebalancer",
-    metadata=k8s.meta.v1.ObjectMetaArgs(
-        name="rebalancer",
-        namespace=namespace.metadata.name,
+# Common Redis env vars shared by all CronJobs
+REDIS_ENV = [
+    k8s.core.v1.EnvVarArgs(
+        name="REDIS_HOST",
+        value="redis.redis.svc.cluster.local",
     ),
-    spec=k8s.batch.v1.CronJobSpecArgs(
-        # Run every Monday at 3:00 PM UTC (30 min after market open)
-        schedule="0 15 * * 1",
-        concurrency_policy="Forbid",
-        successful_jobs_history_limit=3,
-        failed_jobs_history_limit=3,
-        job_template=k8s.batch.v1.JobTemplateSpecArgs(
-            spec=k8s.batch.v1.JobSpecArgs(
-                ttl_seconds_after_finished=86400,  # Clean up after 24 hours
-                backoff_limit=2,
-                template=k8s.core.v1.PodTemplateSpecArgs(
-                    metadata=k8s.meta.v1.ObjectMetaArgs(
-                        labels={"app": "tokenomics", "component": "rebalancer"},
-                    ),
-                    spec=k8s.core.v1.PodSpecArgs(
-                        restart_policy="OnFailure",
-                        containers=[
-                            k8s.core.v1.ContainerArgs(
-                                name="rebalancer",
-                                image=image,
-                                # Uses default entrypoint: python -m tokenomics
-                                env=[
-                                    # Redis configuration
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_HOST",
-                                        value="redis.redis.svc.cluster.local",
-                                    ),
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_PORT",
-                                        value="6379",
-                                    ),
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_PASSWORD",
-                                        value_from=k8s.core.v1.EnvVarSourceArgs(
-                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
-                                                name="redis-secret",
-                                                key="redis-password",
-                                            ),
-                                        ),
-                                    ),
-                                ],
-                                env_from=[
-                                    k8s.core.v1.EnvFromSourceArgs(
-                                        secret_ref=k8s.core.v1.SecretEnvSourceArgs(
-                                            name=secret.metadata.name,
-                                        ),
-                                    ),
-                                ],
-                                volume_mounts=[
-                                    k8s.core.v1.VolumeMountArgs(
-                                        name="config",
-                                        mount_path="/app/config",
-                                        read_only=True,
-                                    ),
-                                    k8s.core.v1.VolumeMountArgs(
-                                        name="logs",
-                                        mount_path="/app/logs",
-                                    ),
-                                ],
-                                resources=k8s.core.v1.ResourceRequirementsArgs(
-                                    requests={"cpu": "100m", "memory": "128Mi"},
-                                    limits={"cpu": "500m", "memory": "256Mi"},
-                                ),
-                            ),
-                        ],
-                        volumes=[
-                            k8s.core.v1.VolumeArgs(
-                                name="config",
-                                config_map=k8s.core.v1.ConfigMapVolumeSourceArgs(
-                                    name=rebalancer_configmap.metadata.name,
-                                ),
-                            ),
-                            k8s.core.v1.VolumeArgs(
-                                name="logs",
-                                empty_dir=k8s.core.v1.EmptyDirVolumeSourceArgs(),
-                            ),
-                        ],
-                    ),
-                ),
+    k8s.core.v1.EnvVarArgs(
+        name="REDIS_PORT",
+        value="6379",
+    ),
+    k8s.core.v1.EnvVarArgs(
+        name="REDIS_PASSWORD",
+        value_from=k8s.core.v1.EnvVarSourceArgs(
+            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
+                name="redis-secret",
+                key="redis-password",
             ),
+        ),
+    ),
+]
+
+FINNHUB_ENV = k8s.core.v1.EnvVarArgs(
+    name="FINNHUB_API_KEY",
+    value_from=k8s.core.v1.EnvVarSourceArgs(
+        secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
+            name="tokenomics-secrets",
+            key="FINNHUB_API_KEY",
         ),
     ),
 )
 
-# Fundamentals refresh CronJob - runs weekly to update company scores
-fundamentals_cronjob = k8s.batch.v1.CronJob(
-    "fundamentals-refresh",
-    metadata=k8s.meta.v1.ObjectMetaArgs(
-        name="fundamentals-refresh",
-        namespace=namespace.metadata.name,
-    ),
-    spec=k8s.batch.v1.CronJobSpecArgs(
-        # Run every Monday at 2:00 AM UTC
-        schedule="0 2 * * 1",
-        concurrency_policy="Forbid",
-        successful_jobs_history_limit=3,
-        failed_jobs_history_limit=3,
-        job_template=k8s.batch.v1.JobTemplateSpecArgs(
-            spec=k8s.batch.v1.JobSpecArgs(
-                ttl_seconds_after_finished=86400,  # Clean up after 24 hours
-                backoff_limit=3,
-                template=k8s.core.v1.PodTemplateSpecArgs(
-                    metadata=k8s.meta.v1.ObjectMetaArgs(
-                        labels={"app": "tokenomics", "component": "fundamentals-refresh"},
-                    ),
-                    spec=k8s.core.v1.PodSpecArgs(
-                        restart_policy="OnFailure",
-                        containers=[
-                            k8s.core.v1.ContainerArgs(
-                                name="fundamentals-refresh",
-                                image=image,
-                                command=["python", "-m", "tokenomics.fundamentals.refresh_job"],
-                                env=[
-                                    # Redis configuration
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_HOST",
-                                        value="redis.redis.svc.cluster.local",
-                                    ),
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_PORT",
-                                        value="6379",
-                                    ),
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_PASSWORD",
-                                        value_from=k8s.core.v1.EnvVarSourceArgs(
-                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
-                                                name="redis-secret",
-                                                key="redis-password",
+# ---------- Per-profile CronJobs ----------
+
+# Scoring profiles and their schedules
+PROFILES = {
+    "tokenomics_v2_base": {
+        "fundamentals_schedule": "0 2 * * 1",   # Monday 2AM UTC
+        "rebalancer_schedule": "0 15 * * 1",     # Monday 3PM UTC
+    },
+    "tokenomics_v3_composite": {
+        "fundamentals_schedule": "0 3 * * 1",   # Monday 3AM UTC (staggered)
+        "rebalancer_schedule": "0 16 * * 1",     # Monday 4PM UTC (staggered)
+    },
+}
+
+
+def make_fundamentals_cronjob(profile_name: str, schedule: str):
+    """Create a fundamentals-refresh CronJob for a specific scoring profile."""
+    resource_name = f"fundamentals-refresh-{profile_name.replace('_', '-')}"
+    return k8s.batch.v1.CronJob(
+        resource_name,
+        metadata=k8s.meta.v1.ObjectMetaArgs(
+            name=resource_name,
+            namespace=namespace.metadata.name,
+        ),
+        spec=k8s.batch.v1.CronJobSpecArgs(
+            schedule=schedule,
+            concurrency_policy="Forbid",
+            successful_jobs_history_limit=3,
+            failed_jobs_history_limit=3,
+            job_template=k8s.batch.v1.JobTemplateSpecArgs(
+                spec=k8s.batch.v1.JobSpecArgs(
+                    ttl_seconds_after_finished=86400,
+                    backoff_limit=3,
+                    template=k8s.core.v1.PodTemplateSpecArgs(
+                        metadata=k8s.meta.v1.ObjectMetaArgs(
+                            labels={
+                                "app": "tokenomics",
+                                "component": "fundamentals-refresh",
+                                "profile": profile_name,
+                            },
+                        ),
+                        spec=k8s.core.v1.PodSpecArgs(
+                            restart_policy="OnFailure",
+                            containers=[
+                                k8s.core.v1.ContainerArgs(
+                                    name="fundamentals-refresh",
+                                    image=image,
+                                    command=["python", "-m", "tokenomics.fundamentals.refresh_job"],
+                                    env=[
+                                        *REDIS_ENV,
+                                        FINNHUB_ENV,
+                                        k8s.core.v1.EnvVarArgs(
+                                            name="SCORING_PROFILE",
+                                            value=profile_name,
+                                        ),
+                                        k8s.core.v1.EnvVarArgs(
+                                            name="FUNDAMENTALS_LIMIT",
+                                            value="1000",
+                                        ),
+                                        k8s.core.v1.EnvVarArgs(
+                                            name="FUNDAMENTALS_BATCH_SIZE",
+                                            value="50",
+                                        ),
+                                    ],
+                                    env_from=[
+                                        k8s.core.v1.EnvFromSourceArgs(
+                                            secret_ref=k8s.core.v1.SecretEnvSourceArgs(
+                                                name=secret.metadata.name,
                                             ),
                                         ),
+                                    ],
+                                    resources=k8s.core.v1.ResourceRequirementsArgs(
+                                        requests={"cpu": "100m", "memory": "256Mi"},
+                                        limits={"cpu": "500m", "memory": "512Mi"},
                                     ),
-                                    # Finnhub API key
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="FINNHUB_API_KEY",
-                                        value_from=k8s.core.v1.EnvVarSourceArgs(
-                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
-                                                name="tokenomics-secrets",
-                                                key="FINNHUB_API_KEY",
-                                            ),
-                                        ),
-                                    ),
-                                    # Configuration
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="FUNDAMENTALS_LIMIT",
-                                        value="1000",
-                                    ),
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="FUNDAMENTALS_BATCH_SIZE",
-                                        value="50",
-                                    ),
-                                ],
-                                resources=k8s.core.v1.ResourceRequirementsArgs(
-                                    requests={"cpu": "100m", "memory": "256Mi"},
-                                    limits={"cpu": "500m", "memory": "512Mi"},
                                 ),
-                            ),
-                        ],
+                            ],
+                        ),
                     ),
                 ),
             ),
         ),
-    ),
-)
+    )
+
+
+def make_rebalancer_cronjob(profile_name: str, schedule: str):
+    """Create a rebalancer CronJob for a specific scoring profile."""
+    resource_name = f"rebalancer-{profile_name.replace('_', '-')}"
+    return k8s.batch.v1.CronJob(
+        resource_name,
+        metadata=k8s.meta.v1.ObjectMetaArgs(
+            name=resource_name,
+            namespace=namespace.metadata.name,
+        ),
+        spec=k8s.batch.v1.CronJobSpecArgs(
+            schedule=schedule,
+            concurrency_policy="Forbid",
+            successful_jobs_history_limit=3,
+            failed_jobs_history_limit=3,
+            job_template=k8s.batch.v1.JobTemplateSpecArgs(
+                spec=k8s.batch.v1.JobSpecArgs(
+                    ttl_seconds_after_finished=86400,
+                    backoff_limit=2,
+                    template=k8s.core.v1.PodTemplateSpecArgs(
+                        metadata=k8s.meta.v1.ObjectMetaArgs(
+                            labels={
+                                "app": "tokenomics",
+                                "component": "rebalancer",
+                                "profile": profile_name,
+                            },
+                        ),
+                        spec=k8s.core.v1.PodSpecArgs(
+                            restart_policy="OnFailure",
+                            containers=[
+                                k8s.core.v1.ContainerArgs(
+                                    name="rebalancer",
+                                    image=image,
+                                    env=[
+                                        *REDIS_ENV,
+                                        k8s.core.v1.EnvVarArgs(
+                                            name="SCORING_PROFILE",
+                                            value=profile_name,
+                                        ),
+                                    ],
+                                    env_from=[
+                                        k8s.core.v1.EnvFromSourceArgs(
+                                            secret_ref=k8s.core.v1.SecretEnvSourceArgs(
+                                                name=secret.metadata.name,
+                                            ),
+                                        ),
+                                    ],
+                                    volume_mounts=[
+                                        k8s.core.v1.VolumeMountArgs(
+                                            name="config",
+                                            mount_path="/app/config",
+                                            read_only=True,
+                                        ),
+                                        k8s.core.v1.VolumeMountArgs(
+                                            name="logs",
+                                            mount_path="/app/logs",
+                                        ),
+                                    ],
+                                    resources=k8s.core.v1.ResourceRequirementsArgs(
+                                        requests={"cpu": "100m", "memory": "128Mi"},
+                                        limits={"cpu": "500m", "memory": "256Mi"},
+                                    ),
+                                ),
+                            ],
+                            volumes=[
+                                k8s.core.v1.VolumeArgs(
+                                    name="config",
+                                    config_map=k8s.core.v1.ConfigMapVolumeSourceArgs(
+                                        name=rebalancer_configmap.metadata.name,
+                                    ),
+                                ),
+                                k8s.core.v1.VolumeArgs(
+                                    name="logs",
+                                    empty_dir=k8s.core.v1.EmptyDirVolumeSourceArgs(),
+                                ),
+                            ],
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+# Create per-profile CronJobs
+fundamentals_cronjobs = {}
+rebalancer_cronjobs = {}
+
+for profile_name, schedules in PROFILES.items():
+    fundamentals_cronjobs[profile_name] = make_fundamentals_cronjob(
+        profile_name, schedules["fundamentals_schedule"]
+    )
+    rebalancer_cronjobs[profile_name] = make_rebalancer_cronjob(
+        profile_name, schedules["rebalancer_schedule"]
+    )
 
 # Universe refresh CronJob - runs monthly to update stock universe by market cap
-# This job fetches market cap for all US stocks and saves top N to Redis
-# The weekly fundamentals job then uses this list instead of alphabetical order
+# This job is SHARED across all profiles (universe is not namespaced)
 universe_cronjob = k8s.batch.v1.CronJob(
     "universe-refresh",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -306,34 +365,8 @@ universe_cronjob = k8s.batch.v1.CronJob(
                                 image=image,
                                 command=["python", "-m", "tokenomics.fundamentals.universe_job"],
                                 env=[
-                                    # Redis configuration
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_HOST",
-                                        value="redis.redis.svc.cluster.local",
-                                    ),
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_PORT",
-                                        value="6379",
-                                    ),
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="REDIS_PASSWORD",
-                                        value_from=k8s.core.v1.EnvVarSourceArgs(
-                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
-                                                name="redis-secret",
-                                                key="redis-password",
-                                            ),
-                                        ),
-                                    ),
-                                    # Finnhub API key
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="FINNHUB_API_KEY",
-                                        value_from=k8s.core.v1.EnvVarSourceArgs(
-                                            secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
-                                                name="tokenomics-secrets",
-                                                key="FINNHUB_API_KEY",
-                                            ),
-                                        ),
-                                    ),
+                                    *REDIS_ENV,
+                                    FINNHUB_ENV,
                                     # Configuration - how many top companies to track
                                     k8s.core.v1.EnvVarArgs(
                                         name="UNIVERSE_SIZE",
@@ -355,6 +388,8 @@ universe_cronjob = k8s.batch.v1.CronJob(
 )
 
 pulumi.export("namespace", namespace.metadata.name)
-pulumi.export("rebalancer-cronjob", rebalancer_cronjob.metadata.name)
-pulumi.export("fundamentals-cronjob", fundamentals_cronjob.metadata.name)
 pulumi.export("universe-cronjob", universe_cronjob.metadata.name)
+for profile_name in PROFILES:
+    safe_name = profile_name.replace("_", "-")
+    pulumi.export(f"fundamentals-cronjob-{safe_name}", fundamentals_cronjobs[profile_name].metadata.name)
+    pulumi.export(f"rebalancer-cronjob-{safe_name}", rebalancer_cronjobs[profile_name].metadata.name)

@@ -1,5 +1,6 @@
 """Composite score calculator for fundamental analysis."""
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
@@ -32,7 +33,23 @@ class FundamentalsScore:
     has_sufficient_data: bool
 
 
-class FundamentalsScorer:
+class BaseScorer(ABC):
+    """Abstract base class for fundamental scorers."""
+
+    @abstractmethod
+    def calculate_score(self, financials: BasicFinancials) -> FundamentalsScore:
+        """Calculate composite fundamental score for a company.
+
+        Args:
+            financials: BasicFinancials object with company metrics
+
+        Returns:
+            FundamentalsScore with composite and component scores
+        """
+        ...
+
+
+class FundamentalsScorer(BaseScorer):
     """Calculates composite fundamental quality scores.
 
     The composite score weights:

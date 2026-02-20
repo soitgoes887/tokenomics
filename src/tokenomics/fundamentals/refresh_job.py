@@ -31,12 +31,13 @@ from typing import Optional
 import structlog
 from pydantic_settings import BaseSettings
 
+from tokenomics.config import load_config, resolve_profile
 from tokenomics.fundamentals import (
     FinancialsFetchError,
     FinnhubFinancialsProvider,
-    FundamentalsScorer,
     FundamentalsStore,
     NoFinancialsDataError,
+    create_scorer,
 )
 from tokenomics.fundamentals.scorer import FundamentalsScore
 from tokenomics.models import BasicFinancials
@@ -239,6 +240,31 @@ def main() -> int:
     )
 
     try:
+        # Resolve scoring profile
+        try:
+            config = load_config()
+        except FileNotFoundError:
+            config = None
+
+        if config is not None:
+            profile_name, profile = resolve_profile(config)
+        else:
+            # No config file — use synthetic default
+            from tokenomics.config import _SYNTHETIC_DEFAULT
+            profile_name, profile = ("default", _SYNTHETIC_DEFAULT)
+
+        print(f"Scoring Profile: {profile_name}")
+        print(f"  Scorer:    {profile.scorer_class}")
+        print(f"  Namespace: {profile.redis_namespace}")
+        print()
+
+        logger.info(
+            "fundamentals_job.profile_resolved",
+            profile=profile_name,
+            scorer_class=profile.scorer_class,
+            namespace=profile.redis_namespace,
+        )
+
         # Load configuration - only need Finnhub API key for this job
         secrets = FundamentalsSecrets()
         if not secrets.finnhub_api_key:
@@ -281,13 +307,13 @@ def main() -> int:
         # Initialize components
         print("Initializing providers...")
         provider = FinnhubFinancialsProvider(secrets)
-        scorer = FundamentalsScorer()
+        scorer = create_scorer(profile.scorer_class)
         print("  Finnhub provider: OK")
-        print("  Scorer: OK")
+        print(f"  Scorer: {profile.scorer_class} OK")
 
         print("Connecting to Redis...")
-        store = FundamentalsStore()
-        print("  Redis connection: OK")
+        store = FundamentalsStore(namespace=profile.redis_namespace)
+        print(f"  Redis connection: OK (namespace={profile.redis_namespace})")
         print()
 
         logger.info("fundamentals_job.providers_initialized")

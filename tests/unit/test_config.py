@@ -1,10 +1,19 @@
 """Tests for configuration loading and validation."""
 
+import os
+
 import pytest
 import yaml
 from pathlib import Path
 
-from tokenomics.config import AppConfig, load_config
+from tokenomics.config import (
+    AppConfig,
+    ProfileSecrets,
+    ScoringProfileConfig,
+    ScoringProfilesConfig,
+    load_config,
+    resolve_profile,
+)
 
 
 class TestAppConfig:
@@ -175,3 +184,182 @@ class TestAppConfig:
         assert config.strategy.capital_usd == 5000
         assert config.news.symbols == ["AAPL", "MSFT"]
         assert config.sentiment.min_conviction == 60
+
+    def test_load_config_with_scoring_profiles(self, tmp_path):
+        """load_config should parse scoring_profiles from YAML."""
+        config_data = {
+            "strategy": {
+                "name": "yaml-test",
+                "capital_usd": 5000,
+                "position_size_min_usd": 250,
+                "position_size_max_usd": 500,
+                "max_open_positions": 5,
+                "target_new_positions_per_month": 10,
+            },
+            "trading": {"paper": True},
+            "logging": {
+                "level": "DEBUG",
+                "trade_log": "t.log",
+                "decision_log": "d.log",
+                "app_log": "a.log",
+            },
+            "scoring_profiles": {
+                "v2_base": {
+                    "scorer_class": "FundamentalsScorer",
+                    "redis_namespace": "fundamentals:v2_base",
+                    "alpaca_api_key_env": "ALPACA_API_KEY",
+                    "alpaca_secret_key_env": "ALPACA_SECRET_KEY",
+                },
+                "v3_comp": {
+                    "scorer_class": "CompositeScorer",
+                    "redis_namespace": "fundamentals:v3_comp",
+                    "alpaca_api_key_env": "ALPACA_API_KEY_V3",
+                    "alpaca_secret_key_env": "ALPACA_SECRET_KEY_V3",
+                },
+                "default_profile": "v2_base",
+            },
+        }
+
+        config_file = tmp_path / "settings.yaml"
+        with open(config_file, "w") as f:
+            yaml.dump(config_data, f)
+
+        config = load_config(config_file)
+        assert config.scoring_profiles is not None
+        assert "v2_base" in config.scoring_profiles.profiles
+        assert "v3_comp" in config.scoring_profiles.profiles
+        assert config.scoring_profiles.default_profile == "v2_base"
+        assert config.scoring_profiles.profiles["v2_base"].scorer_class == "FundamentalsScorer"
+
+    def test_no_scoring_profiles_backward_compat(self, test_config):
+        """Config without scoring_profiles should have None."""
+        assert test_config.scoring_profiles is None
+
+
+class TestScoringProfilesConfig:
+    def test_valid_profiles(self):
+        """Valid profiles should parse correctly."""
+        profiles = ScoringProfilesConfig(
+            profiles={
+                "v2": ScoringProfileConfig(
+                    scorer_class="FundamentalsScorer",
+                    redis_namespace="fundamentals:v2",
+                    alpaca_api_key_env="ALPACA_API_KEY",
+                    alpaca_secret_key_env="ALPACA_SECRET_KEY",
+                ),
+            },
+            default_profile="v2",
+        )
+        assert profiles.default_profile == "v2"
+
+    def test_default_must_exist_in_profiles(self):
+        """default_profile must reference an existing profile."""
+        with pytest.raises(ValueError, match="not found in profiles"):
+            ScoringProfilesConfig(
+                profiles={
+                    "v2": ScoringProfileConfig(
+                        scorer_class="FundamentalsScorer",
+                        redis_namespace="fundamentals:v2",
+                        alpaca_api_key_env="ALPACA_API_KEY",
+                        alpaca_secret_key_env="ALPACA_SECRET_KEY",
+                    ),
+                },
+                default_profile="nonexistent",
+            )
+
+
+class TestResolveProfile:
+    def _make_config_with_profiles(self):
+        return AppConfig(
+            strategy={
+                "name": "test",
+                "capital_usd": 10000,
+                "position_size_min_usd": 500,
+                "position_size_max_usd": 1000,
+                "max_open_positions": 10,
+                "target_new_positions_per_month": 15,
+            },
+            trading={},
+            logging={
+                "trade_log": "t.log",
+                "decision_log": "d.log",
+                "app_log": "a.log",
+            },
+            scoring_profiles=ScoringProfilesConfig(
+                profiles={
+                    "v2_base": ScoringProfileConfig(
+                        scorer_class="FundamentalsScorer",
+                        redis_namespace="fundamentals:v2_base",
+                        alpaca_api_key_env="ALPACA_API_KEY",
+                        alpaca_secret_key_env="ALPACA_SECRET_KEY",
+                    ),
+                    "v3_comp": ScoringProfileConfig(
+                        scorer_class="CompositeScorer",
+                        redis_namespace="fundamentals:v3_comp",
+                        alpaca_api_key_env="ALPACA_API_KEY_V3",
+                        alpaca_secret_key_env="ALPACA_SECRET_KEY_V3",
+                    ),
+                },
+                default_profile="v2_base",
+            ),
+        )
+
+    def test_resolve_no_profiles_returns_synthetic(self, test_config):
+        """No scoring_profiles section -> synthetic default."""
+        name, profile = resolve_profile(test_config)
+        assert name == "default"
+        assert profile.scorer_class == "FundamentalsScorer"
+        assert profile.redis_namespace == "fundamentals"
+
+    def test_resolve_uses_default_profile(self, monkeypatch):
+        """Without SCORING_PROFILE env var, use default_profile."""
+        monkeypatch.delenv("SCORING_PROFILE", raising=False)
+        config = self._make_config_with_profiles()
+        name, profile = resolve_profile(config)
+        assert name == "v2_base"
+        assert profile.redis_namespace == "fundamentals:v2_base"
+
+    def test_resolve_uses_env_var(self, monkeypatch):
+        """SCORING_PROFILE env var overrides default."""
+        monkeypatch.setenv("SCORING_PROFILE", "v3_comp")
+        config = self._make_config_with_profiles()
+        name, profile = resolve_profile(config)
+        assert name == "v3_comp"
+        assert profile.scorer_class == "CompositeScorer"
+        assert profile.redis_namespace == "fundamentals:v3_comp"
+
+    def test_resolve_unknown_env_var_raises(self, monkeypatch):
+        """SCORING_PROFILE with unknown value should raise."""
+        monkeypatch.setenv("SCORING_PROFILE", "nonexistent")
+        config = self._make_config_with_profiles()
+        with pytest.raises(ValueError, match="not found in configured profiles"):
+            resolve_profile(config)
+
+
+class TestProfileSecrets:
+    def test_resolves_keys_from_env(self, monkeypatch):
+        """ProfileSecrets should read env vars named in the profile."""
+        monkeypatch.setenv("MY_API_KEY", "key123")
+        monkeypatch.setenv("MY_SECRET_KEY", "secret456")
+        profile = ScoringProfileConfig(
+            scorer_class="FundamentalsScorer",
+            redis_namespace="test",
+            alpaca_api_key_env="MY_API_KEY",
+            alpaca_secret_key_env="MY_SECRET_KEY",
+        )
+        secrets = ProfileSecrets(profile)
+        assert secrets.alpaca_api_key == "key123"
+        assert secrets.alpaca_secret_key == "secret456"
+
+    def test_missing_env_returns_empty(self, monkeypatch):
+        """Missing env vars should return empty strings."""
+        monkeypatch.delenv("NONEXISTENT_KEY", raising=False)
+        profile = ScoringProfileConfig(
+            scorer_class="FundamentalsScorer",
+            redis_namespace="test",
+            alpaca_api_key_env="NONEXISTENT_KEY",
+            alpaca_secret_key_env="NONEXISTENT_KEY",
+        )
+        secrets = ProfileSecrets(profile)
+        assert secrets.alpaca_api_key == ""
+        assert secrets.alpaca_secret_key == ""

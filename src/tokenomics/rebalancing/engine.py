@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import structlog
 
-from tokenomics.config import AppConfig, Secrets
+from tokenomics.config import AppConfig, ProfileSecrets, Secrets, resolve_profile
 from tokenomics.fundamentals.store import FundamentalsStore
 from tokenomics.rebalancing.portfolio import compute_target_weights
 from tokenomics.rebalancing.trader import generate_trades, TradeSide
@@ -24,8 +24,20 @@ class RebalancingEngine:
     def __init__(self, config: AppConfig, secrets: Secrets):
         self._config = config
         self._secrets = secrets
-        self._broker = AlpacaBrokerProvider(config, secrets)
-        self._store = FundamentalsStore()
+
+        # Resolve scoring profile
+        self._profile_name, self._profile = resolve_profile(config)
+        profile_secrets = ProfileSecrets(self._profile)
+
+        # Use profile-specific Alpaca keys if available, fall back to secrets
+        broker_kwargs = {}
+        if profile_secrets.alpaca_api_key:
+            broker_kwargs["alpaca_api_key"] = profile_secrets.alpaca_api_key
+        if profile_secrets.alpaca_secret_key:
+            broker_kwargs["alpaca_secret_key"] = profile_secrets.alpaca_secret_key
+
+        self._broker = AlpacaBrokerProvider(config, secrets, **broker_kwargs)
+        self._store = FundamentalsStore(namespace=self._profile.redis_namespace)
 
     def run(self) -> int:
         """Run the rebalancing process.
@@ -39,9 +51,12 @@ class RebalancingEngine:
         print("TOKENOMICS PORTFOLIO REBALANCER")
         print("=" * 80)
         print(f"Start Time: {start_time.isoformat()}")
+        print(f"Profile:    {self._profile_name}")
+        print(f"Namespace:  {self._profile.redis_namespace}")
         print()
 
-        logger.info("rebalancer.starting", timestamp=start_time.isoformat())
+        logger.info("rebalancer.starting", timestamp=start_time.isoformat(),
+                     profile=self._profile_name)
 
         try:
             # Check market hours if configured

@@ -1,11 +1,12 @@
 """Configuration loading and validation using Pydantic."""
 
+import os
 from pathlib import Path
 
 from typing import Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -66,6 +67,32 @@ class RebalancingConfig(BaseModel):
     min_trade_usd: float = Field(default=100.0, ge=0)
 
 
+class ScoringProfileConfig(BaseModel):
+    """Configuration for a single scoring profile."""
+
+    scorer_class: str
+    redis_namespace: str
+    alpaca_api_key_env: str
+    alpaca_secret_key_env: str
+    description: str = ""
+
+
+class ScoringProfilesConfig(BaseModel):
+    """Container for all scoring profiles."""
+
+    profiles: dict[str, ScoringProfileConfig]
+    default_profile: str
+
+    @model_validator(mode="after")
+    def default_must_exist(self):
+        if self.default_profile not in self.profiles:
+            raise ValueError(
+                f"default_profile '{self.default_profile}' not found in profiles: "
+                f"{list(self.profiles.keys())}"
+            )
+        return self
+
+
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     trade_log: str
@@ -90,6 +117,7 @@ class AppConfig(BaseModel):
     trading: TradingConfig
     logging: LoggingConfig
     rebalancing: RebalancingConfig = Field(default_factory=RebalancingConfig)
+    scoring_profiles: Optional[ScoringProfilesConfig] = None
 
 
 class Secrets(BaseSettings):
@@ -109,4 +137,68 @@ def load_config(config_path: Path = Path("config/settings.yaml")) -> AppConfig:
     """Load and validate application configuration from YAML."""
     with open(config_path) as f:
         raw = yaml.safe_load(f)
+
+    # Transform scoring_profiles YAML structure into Pydantic model format
+    if "scoring_profiles" in raw:
+        sp = raw["scoring_profiles"]
+        default_profile = sp.pop("default_profile", None)
+        # Remaining keys are profile names
+        if default_profile and sp:
+            raw["scoring_profiles"] = {
+                "profiles": sp,
+                "default_profile": default_profile,
+            }
+        else:
+            # Malformed section — drop it so AppConfig uses None
+            del raw["scoring_profiles"]
+
     return AppConfig(**raw)
+
+
+# Synthetic default profile for backward compatibility
+_SYNTHETIC_DEFAULT = ScoringProfileConfig(
+    scorer_class="FundamentalsScorer",
+    redis_namespace="fundamentals",
+    alpaca_api_key_env="ALPACA_API_KEY",
+    alpaca_secret_key_env="ALPACA_SECRET_KEY",
+    description="Default profile (legacy)",
+)
+
+
+def resolve_profile(config: AppConfig) -> tuple[str, ScoringProfileConfig]:
+    """Resolve the active scoring profile.
+
+    Priority:
+    1. SCORING_PROFILE env var
+    2. default_profile from config
+    3. Synthetic default (backward compatible)
+
+    Returns:
+        Tuple of (profile_name, ScoringProfileConfig)
+
+    Raises:
+        ValueError: If SCORING_PROFILE env var references an unknown profile
+    """
+    if config.scoring_profiles is None:
+        return ("default", _SYNTHETIC_DEFAULT)
+
+    profiles = config.scoring_profiles
+    env_profile = os.getenv("SCORING_PROFILE")
+
+    if env_profile:
+        if env_profile not in profiles.profiles:
+            raise ValueError(
+                f"SCORING_PROFILE='{env_profile}' not found in configured profiles: "
+                f"{list(profiles.profiles.keys())}"
+            )
+        return (env_profile, profiles.profiles[env_profile])
+
+    return (profiles.default_profile, profiles.profiles[profiles.default_profile])
+
+
+class ProfileSecrets:
+    """Resolves Alpaca API keys from env var names specified in a profile."""
+
+    def __init__(self, profile: ScoringProfileConfig):
+        self.alpaca_api_key = os.getenv(profile.alpaca_api_key_env, "")
+        self.alpaca_secret_key = os.getenv(profile.alpaca_secret_key_env, "")

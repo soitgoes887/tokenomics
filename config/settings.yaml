@@ -20,6 +20,25 @@ rebalancing:
   rebalance_threshold_pct: 20.0  # Only trade if >20% deviation from target
   min_trade_usd: 100.0       # Skip trades smaller than $100
 
+# Scoring profiles — each runs independently with its own scorer, Redis namespace,
+# and Alpaca account. Selected at runtime via SCORING_PROFILE env var.
+scoring_profiles:
+  tokenomics_v2_base:
+    scorer_class: "FundamentalsScorer"
+    redis_namespace: "fundamentals:v2_base"
+    alpaca_api_key_env: "ALPACA_API_KEY"
+    alpaca_secret_key_env: "ALPACA_SECRET_KEY"
+    description: "Original 3-factor scorer (ROE/Debt/Growth)"
+
+  tokenomics_v3_composite:
+    scorer_class: "CompositeScorer"
+    redis_namespace: "fundamentals:v3_composite"
+    alpaca_api_key_env: "ALPACA_API_KEY_V3"
+    alpaca_secret_key_env: "ALPACA_SECRET_KEY_V3"
+    description: "Extended composite scorer (placeholder)"
+
+  default_profile: "tokenomics_v2_base"
+
 trading:
   paper: true
   market_hours_only: true

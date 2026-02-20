@@ -30,10 +30,12 @@ def _is_crypto(symbol: str) -> bool:
 class AlpacaBrokerProvider(BrokerProvider):
     """Handles all interactions with Alpaca Trading API."""
 
-    def __init__(self, config: AppConfig, secrets: Secrets):
+    def __init__(self, config: AppConfig, secrets: Secrets, *,
+                 alpaca_api_key: str | None = None,
+                 alpaca_secret_key: str | None = None):
         self._config = config.trading
-        self._api_key = secrets.alpaca_api_key
-        self._secret_key = secrets.alpaca_secret_key
+        self._api_key = alpaca_api_key or secrets.alpaca_api_key
+        self._secret_key = alpaca_secret_key or secrets.alpaca_secret_key
         self._client = TradingClient(
             api_key=self._api_key,
             secret_key=self._secret_key,

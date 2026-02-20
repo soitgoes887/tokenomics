@@ -92,3 +92,26 @@ class TestAlpacaBrokerProvider:
         broker._client.get_open_position.side_effect = Exception("not found")
         result = broker.get_position("AAPL")
         assert result is None
+
+    def test_explicit_api_keys_override_secrets(self, test_config, mock_secrets):
+        """Keyword API keys should override secrets."""
+        with patch("tokenomics.trading.broker.TradingClient") as MockClient:
+            b = AlpacaBrokerProvider(
+                test_config, mock_secrets,
+                alpaca_api_key="override-key",
+                alpaca_secret_key="override-secret",
+            )
+            assert b._api_key == "override-key"
+            assert b._secret_key == "override-secret"
+            MockClient.assert_called_once_with(
+                api_key="override-key",
+                secret_key="override-secret",
+                paper=True,
+            )
+
+    def test_no_keyword_args_uses_secrets(self, test_config, mock_secrets):
+        """Without keyword args, should use secrets."""
+        with patch("tokenomics.trading.broker.TradingClient") as MockClient:
+            b = AlpacaBrokerProvider(test_config, mock_secrets)
+            assert b._api_key == "test-alpaca-key"
+            assert b._secret_key == "test-alpaca-secret"

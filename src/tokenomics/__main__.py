@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from tokenomics.config import Secrets, load_config
+from tokenomics.config import Secrets, load_config, resolve_profile
 from tokenomics.logging_config import configure_logging
 from tokenomics.rebalancing.engine import RebalancingEngine
 
@@ -18,6 +18,9 @@ def main():
         sys.exit(1)
 
     configure_logging(config.logging)
+
+    profile_name, profile = resolve_profile(config)
+    print(f"Active scoring profile: {profile_name} ({profile.scorer_class})")
 
     engine = RebalancingEngine(config, secrets)
     sys.exit(engine.run())

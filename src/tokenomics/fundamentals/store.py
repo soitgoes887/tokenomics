@@ -43,8 +43,20 @@ class FundamentalsStore:
     # Cache freshness: 7 days
     CACHE_FRESHNESS_DAYS = 7
 
-    def __init__(self):
-        """Initialize Redis connection from environment variables."""
+    def __init__(self, namespace: str | None = None):
+        """Initialize Redis connection from environment variables.
+
+        Args:
+            namespace: Optional Redis key namespace. If provided, overrides
+                       KEY_PREFIX and SCORES_KEY. Universe keys are always shared.
+        """
+        if namespace is not None:
+            self.KEY_PREFIX = namespace
+            self.SCORES_KEY = f"{namespace}:scores"
+        else:
+            self.KEY_PREFIX = "fundamentals"
+            self.SCORES_KEY = "fundamentals:scores"
+
         redis_host = os.getenv("REDIS_HOST", "localhost")
         redis_port = int(os.getenv("REDIS_PORT", "6379"))
         redis_password = os.getenv("REDIS_PASSWORD")

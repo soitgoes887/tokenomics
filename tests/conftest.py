@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tokenomics.config import AppConfig, Secrets
+from tokenomics.config import AppConfig, Secrets, ScoringProfileConfig, ScoringProfilesConfig
 from tokenomics.models import (
     NewsArticle,
     Sentiment,
@@ -114,4 +114,16 @@ def sample_signal() -> TradeSignal:
         sentiment=Sentiment.BULLISH,
         position_size_usd=700,
         reasoning="Record services revenue indicates strong recurring income growth.",
+    )
+
+
+@pytest.fixture
+def test_profile_config() -> ScoringProfileConfig:
+    """Provide a test scoring profile configuration."""
+    return ScoringProfileConfig(
+        scorer_class="FundamentalsScorer",
+        redis_namespace="fundamentals:test",
+        alpaca_api_key_env="ALPACA_API_KEY",
+        alpaca_secret_key_env="ALPACA_SECRET_KEY",
+        description="Test profile",
     )
