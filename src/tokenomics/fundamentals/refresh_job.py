@@ -139,7 +139,7 @@ def format_score(value: float) -> str:
     return f"{value:>6.1f}"
 
 
-def print_summary_table(results: list[CompanyResult]) -> None:
+def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None = None) -> None:
     """Print a formatted table of all company results to stdout.
 
     This will be visible in kubectl logs for the cronjob.
@@ -180,7 +180,19 @@ def print_summary_table(results: list[CompanyResult]) -> None:
     print("\n")
     print(separator)
     if is_v3:
-        print("COMPOSITE SCORING SUMMARY (Value/Quality/Momentum/LowVol)")
+        # Extract weights from scorer_kwargs or use defaults
+        vw = scorer_kwargs.get("value_weight", 0.25) if scorer_kwargs else 0.25
+        qw = scorer_kwargs.get("quality_weight", 0.25) if scorer_kwargs else 0.25
+        mw = scorer_kwargs.get("momentum_weight", 0.25) if scorer_kwargs else 0.25
+        lw = scorer_kwargs.get("lowvol_weight", 0.25) if scorer_kwargs else 0.25
+
+        print("COMPOSITE SCORING SUMMARY")
+        print(f"  Score = pctrank({vw:.0%}*Value + {qw:.0%}*Quality + {mw:.0%}*Momentum + {lw:.0%}*LowVol)")
+        print(f"  Value   = pctrank(avg_z(EarningsYield, FCFY, BookPrice))")
+        print(f"  Quality = pctrank(avg_z(ROE, ROIC, GrossMargin, LeverageScore))")
+        print(f"  Momntm  = pctrank(z(52wk_return))")
+        print(f"  LowVol  = pctrank(avg_z(1/beta, 1/range_vol))")
+        print(f"  * Companies missing any sub-score are excluded from ranking")
     else:
         print("FUNDAMENTALS ANALYSIS SUMMARY")
     print(separator)
@@ -629,7 +641,7 @@ def main() -> int:
         )
 
         # Print the summary table
-        print_summary_table(results)
+        print_summary_table(results, scorer_kwargs=profile.scorer_kwargs)
 
         # Show what was updated in this run
         updated_results = [r for r in results if r.status == "success"]

@@ -75,7 +75,7 @@ class TestCompositeScorer:
             assert 0 <= s.lowvol_score <= 100
 
     def test_nan_handling(self):
-        """Partial data stocks still scored via re-weighting."""
+        """Companies missing any sub-score get neutral 50.0 and has_sufficient_data=False."""
         scorer = CompositeScorer()
 
         full = _make_financials("FULL")
@@ -100,8 +100,9 @@ class TestCompositeScorer:
         # Value and momentum should be None (all inputs were None)
         assert part_score.value_score is None
         assert part_score.momentum_score is None
-        # Still has sufficient data (2 sub-scores available)
-        assert part_score.has_sufficient_data is True
+        # Excluded from ranking — missing sub-scores
+        assert part_score.has_sufficient_data is False
+        assert part_score.composite_score == 50.0
 
     def test_single_symbol_returns_neutral(self):
         """calculate_score() returns 50.0 with has_sufficient_data=False."""

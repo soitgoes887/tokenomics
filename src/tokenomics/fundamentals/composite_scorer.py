@@ -120,24 +120,19 @@ class CompositeScorer(BaseScorer):
             "lowvol": lowvol_rank,
         }, index=df.index)
 
-        # --- Composite: weighted sum with NaN re-weighting ---
+        # --- Composite: weighted sum, require all 4 sub-scores ---
         composite = pd.Series(np.nan, index=result.index)
         non_nan_count = result.notna().sum(axis=1)
 
         for idx in result.index:
             row = result.loc[idx]
             available = row.dropna()
-            if len(available) < 2:
-                composite[idx] = np.nan
-                continue
-
-            total_w = sum(self._weights[col] for col in available.index)
-            if total_w == 0:
+            if len(available) < 4:
                 composite[idx] = np.nan
                 continue
 
             composite[idx] = sum(
-                available[col] * (self._weights[col] / total_w)
+                available[col] * self._weights[col]
                 for col in available.index
             )
 
@@ -148,7 +143,7 @@ class CompositeScorer(BaseScorer):
         scores: list[FundamentalsScore] = []
         for f in financials_list:
             sym = f.symbol
-            sufficient = non_nan_count.get(sym, 0) >= 2
+            has_all = non_nan_count.get(sym, 0) == 4
 
             fs = final_rank.get(sym, np.nan)
             score_val = round(float(fs), 2) if pd.notna(fs) else 50.0
@@ -161,7 +156,7 @@ class CompositeScorer(BaseScorer):
             scores.append(FundamentalsScore(
                 symbol=sym,
                 composite_score=score_val,
-                has_sufficient_data=bool(sufficient),
+                has_sufficient_data=bool(has_all),
                 value_score=round(float(v), 2) if v is not None else None,
                 quality_score=round(float(q), 2) if q is not None else None,
                 momentum_score=round(float(m), 2) if m is not None else None,
