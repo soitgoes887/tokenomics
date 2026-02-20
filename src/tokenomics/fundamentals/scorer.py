@@ -18,19 +18,25 @@ class FundamentalsScore:
     symbol: str
     composite_score: float  # 0-100 final score
 
-    # Component scores (0-100 each)
-    roe_score: float
-    debt_score: float
-    growth_score: float
+    # Component scores (0-100 each) — FundamentalsScorer (v2)
+    roe_score: float = 0.0
+    debt_score: float = 0.0
+    growth_score: float = 0.0
 
-    # Raw values used in calculation
-    roe: Optional[float]
-    debt_to_equity: Optional[float]
-    revenue_growth: Optional[float]
-    eps_growth: Optional[float]
+    # Raw values used in calculation — FundamentalsScorer (v2)
+    roe: Optional[float] = None
+    debt_to_equity: Optional[float] = None
+    revenue_growth: Optional[float] = None
+    eps_growth: Optional[float] = None
 
     # Scoring flags
-    has_sufficient_data: bool
+    has_sufficient_data: bool = False
+
+    # Sub-scores (0-100 each) — CompositeScorer (v3)
+    value_score: Optional[float] = None
+    quality_score: Optional[float] = None
+    momentum_score: Optional[float] = None
+    lowvol_score: Optional[float] = None
 
 
 class BaseScorer(ABC):
@@ -47,6 +53,22 @@ class BaseScorer(ABC):
             FundamentalsScore with composite and component scores
         """
         ...
+
+    def calculate_scores_batch(
+        self, financials_list: list[BasicFinancials]
+    ) -> list[FundamentalsScore]:
+        """Calculate scores for multiple companies at once.
+
+        Default implementation loops calculate_score(). Override for
+        cross-sectional scoring that needs the full universe.
+
+        Args:
+            financials_list: List of BasicFinancials for all companies
+
+        Returns:
+            List of FundamentalsScore in the same order as input
+        """
+        return [self.calculate_score(f) for f in financials_list]
 
 
 class FundamentalsScorer(BaseScorer):

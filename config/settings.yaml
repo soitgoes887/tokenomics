@@ -35,7 +35,7 @@ scoring_profiles:
     redis_namespace: "fundamentals:v3_composite"
     alpaca_api_key_env: "ALPACA_API_KEY_V3"
     alpaca_secret_key_env: "ALPACA_SECRET_KEY_V3"
-    description: "Extended composite scorer (placeholder)"
+    description: "4-factor composite (Value/Quality/Momentum/LowVol)"
 
   default_profile: "tokenomics_v2_base"
 

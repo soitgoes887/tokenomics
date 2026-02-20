@@ -1,5 +1,6 @@
 """Redis storage for fundamentals data and scores."""
 
+import dataclasses
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -157,17 +158,7 @@ class FundamentalsStore:
             "symbol": financials.symbol,
             "raw_metrics": financials.model_dump_json(),
             "score": str(score.composite_score),
-            "score_details": json.dumps({
-                "composite_score": score.composite_score,
-                "roe_score": score.roe_score,
-                "debt_score": score.debt_score,
-                "growth_score": score.growth_score,
-                "roe": score.roe,
-                "debt_to_equity": score.debt_to_equity,
-                "revenue_growth": score.revenue_growth,
-                "eps_growth": score.eps_growth,
-                "has_sufficient_data": score.has_sufficient_data,
-            }),
+            "score_details": json.dumps(dataclasses.asdict(score)),
             "updated": now,
         }
 
@@ -211,17 +202,7 @@ class FundamentalsStore:
                 "symbol": financials.symbol,
                 "raw_metrics": financials.model_dump_json(),
                 "score": str(score.composite_score),
-                "score_details": json.dumps({
-                    "composite_score": score.composite_score,
-                    "roe_score": score.roe_score,
-                    "debt_score": score.debt_score,
-                    "growth_score": score.growth_score,
-                    "roe": score.roe,
-                    "debt_to_equity": score.debt_to_equity,
-                    "revenue_growth": score.revenue_growth,
-                    "eps_growth": score.eps_growth,
-                    "has_sufficient_data": score.has_sufficient_data,
-                }),
+                "score_details": json.dumps(dataclasses.asdict(score)),
                 "updated": now,
             }
 

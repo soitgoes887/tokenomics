@@ -354,7 +354,7 @@ def main() -> int:
             logger.error("fundamentals_job.no_symbols")
             return 1
 
-        # Step 2: Process each company
+        # Step 2: Fetch financials for each company
         # Rate limiting: 60 calls/minute = 1 call/second
         # Retry: up to 3 attempts with 2 second delay between retries
         # Cache: skip API call if data is < 7 days old
@@ -376,6 +376,10 @@ def main() -> int:
         no_data_count = 0
         retry_count = 0
         cached_count = 0
+
+        # Phase 1 — Fetch all financials (cache check + retry + rate limiting)
+        fetched: list[tuple[str, BasicFinancials]] = []  # (company_name, financials)
+        previous_scores: dict[str, float | None] = {}
 
         for i, symbol in enumerate(symbol_list):
             progress_pct = ((i + 1) / len(symbol_list)) * 100
@@ -410,7 +414,7 @@ def main() -> int:
                 continue
 
             # Get previous score before updating
-            previous_score = store.get_score(symbol)
+            previous_scores[symbol] = store.get_score(symbol)
 
             # Retry loop for each company
             financials = None
@@ -464,41 +468,7 @@ def main() -> int:
                     break  # Don't retry unexpected errors
 
             if financials is not None:
-                # Success - calculate score
-                score = scorer.calculate_score(financials)
-
-                # Add to batch for Redis
-                batch.append((financials, score))
-
-                # Track result
-                result = CompanyResult(
-                    symbol=symbol,
-                    name=company_name,
-                    score=score.composite_score,
-                    roe=score.roe,
-                    debt_to_equity=score.debt_to_equity,
-                    revenue_growth=score.revenue_growth,
-                    eps_growth=score.eps_growth,
-                    status="success" if score.has_sufficient_data else "no_data",
-                    previous_score=previous_score,
-                )
-                results.append(result)
-
-                if score.has_sufficient_data:
-                    success_count += 1
-                else:
-                    no_data_count += 1
-
-                # Log every company with score
-                logger.info(
-                    "fundamentals_job.company_processed",
-                    symbol=symbol,
-                    score=score.composite_score,
-                    roe=score.roe,
-                    debt_ratio=score.debt_to_equity,
-                    growth=score.revenue_growth,
-                    has_data=score.has_sufficient_data,
-                )
+                fetched.append((company_name, financials))
             else:
                 # Failed after all retries
                 failed_count += 1
@@ -523,34 +493,67 @@ def main() -> int:
             # Print progress every 50 companies
             if (i + 1) % 50 == 0:
                 elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-                api_calls = success_count + failed_count + no_data_count
                 # ETA based on remaining non-cached companies (estimate)
                 remaining = len(symbol_list) - i - 1
-                eta_minutes = remaining / 60 if api_calls > 0 else remaining
+                eta_minutes = remaining / 60 if len(fetched) > 0 else remaining
                 print(
-                    f"  [{progress_pct:5.1f}%] Processed {i + 1}/{len(symbol_list)} - "
-                    f"Cached: {cached_count}, Success: {success_count}, Failed: {failed_count}, "
-                    f"No Data: {no_data_count}, Retries: {retry_count} | ETA: {eta_minutes:.0f}min"
+                    f"  [{progress_pct:5.1f}%] Fetched {i + 1}/{len(symbol_list)} - "
+                    f"Cached: {cached_count}, Fetched: {len(fetched)}, Failed: {failed_count}, "
+                    f"Retries: {retry_count} | ETA: {eta_minutes:.0f}min"
                 )
-
-            # Save batch to Redis when full
-            if len(batch) >= batch_size:
-                store.save_batch(batch)
-                logger.debug(
-                    "fundamentals_job.batch_saved",
-                    batch_size=len(batch),
-                )
-                batch = []
 
             # Rate limiting: 1 request per second (60/min limit)
             time.sleep(rate_limit_delay)
 
-        # Save any remaining items in batch
+        # Phase 2 — Batch score all fetched financials
+        if fetched:
+            financials_list = [f for _, f in fetched]
+            scores = scorer.calculate_scores_batch(financials_list)
+
+            for (name, financials), score in zip(fetched, scores):
+                batch.append((financials, score))
+
+                previous_score = previous_scores.get(financials.symbol)
+                result = CompanyResult(
+                    symbol=financials.symbol,
+                    name=name,
+                    score=score.composite_score,
+                    roe=score.roe,
+                    debt_to_equity=score.debt_to_equity,
+                    revenue_growth=score.revenue_growth,
+                    eps_growth=score.eps_growth,
+                    status="success" if score.has_sufficient_data else "no_data",
+                    previous_score=previous_score,
+                )
+                results.append(result)
+
+                if score.has_sufficient_data:
+                    success_count += 1
+                else:
+                    no_data_count += 1
+
+                logger.info(
+                    "fundamentals_job.company_processed",
+                    symbol=financials.symbol,
+                    score=score.composite_score,
+                    has_data=score.has_sufficient_data,
+                )
+
+        # Phase 3 — Save to Redis in batches
+        saved_so_far = 0
+        while saved_so_far < len(batch):
+            chunk = batch[saved_so_far : saved_so_far + batch_size]
+            store.save_batch(chunk)
+            logger.debug(
+                "fundamentals_job.batch_saved",
+                batch_size=len(chunk),
+            )
+            saved_so_far += len(chunk)
+
         if batch:
-            store.save_batch(batch)
             logger.info(
-                "fundamentals_job.final_batch_saved",
-                batch_size=len(batch),
+                "fundamentals_job.all_batches_saved",
+                total=len(batch),
             )
 
         print("-" * 60)
