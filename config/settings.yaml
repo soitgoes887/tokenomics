@@ -16,6 +16,7 @@ rebalancing:
   top_n_stocks: 100          # Hold top 100 stocks by fundamental score
   weighting: "score"         # "score" = score-proportional, "equal" = equal weight
   max_position_pct: 5.0      # Max 5% per stock
+  max_sector_pct: 25.0       # Max 25% per sector
   min_score: 50.0            # Only include stocks with score >= 50
   rebalance_threshold_pct: 20.0  # Only trade if >20% deviation from target
   min_trade_usd: 100.0       # Skip trades smaller than $100

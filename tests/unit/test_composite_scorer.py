@@ -200,3 +200,107 @@ class TestCompositeScorer:
         """Empty input returns empty list."""
         scorer = CompositeScorer()
         assert scorer.calculate_scores_batch([]) == []
+
+    def test_sector_neutral_ranking(self):
+        """Stocks in different sectors get sub-scores based on intra-sector rank."""
+        scorer = CompositeScorer()
+
+        # Create two groups: "Tech" stocks with high ROE, "Energy" with low ROE
+        # Within each sector, we vary metrics to test intra-sector ranking
+        financials = [
+            _make_financials("TECH1", pe_ratio=10.0, roe=30.0, roic=25.0, gross_margin=60.0),
+            _make_financials("TECH2", pe_ratio=20.0, roe=20.0, roic=15.0, gross_margin=50.0),
+            _make_financials("TECH3", pe_ratio=30.0, roe=10.0, roic=5.0, gross_margin=40.0),
+            _make_financials("ENRG1", pe_ratio=8.0, roe=15.0, roic=12.0, gross_margin=30.0),
+            _make_financials("ENRG2", pe_ratio=12.0, roe=10.0, roic=8.0, gross_margin=25.0),
+            _make_financials("ENRG3", pe_ratio=18.0, roe=5.0, roic=3.0, gross_margin=20.0),
+        ]
+
+        sectors = {
+            "TECH1": "Technology",
+            "TECH2": "Technology",
+            "TECH3": "Technology",
+            "ENRG1": "Energy",
+            "ENRG2": "Energy",
+            "ENRG3": "Energy",
+        }
+
+        scores = scorer.calculate_scores_batch(financials, sectors=sectors)
+        score_map = {s.symbol: s for s in scores}
+
+        # Within Tech sector: TECH1 should rank highest in quality
+        assert score_map["TECH1"].quality_score > score_map["TECH3"].quality_score
+
+        # Within Energy sector: ENRG1 should rank highest in quality
+        assert score_map["ENRG1"].quality_score > score_map["ENRG3"].quality_score
+
+    def test_sector_neutral_vs_global(self):
+        """Sector-neutral produces different rankings than global."""
+        scorer = CompositeScorer(
+            value_weight=0.0,
+            quality_weight=1.0,
+            momentum_weight=0.0,
+            lowvol_weight=0.0,
+        )
+
+        # 6 Tech stocks with high quality, 6 Energy stocks with low quality
+        # Global ranking would put all Tech at top; sector-neutral should mix
+        financials = []
+        for i in range(6):
+            financials.append(
+                _make_financials(
+                    f"TECH{i}",
+                    roe=20.0 + i * 5,
+                    roic=15.0 + i * 3,
+                    gross_margin=50.0 + i * 3,
+                    debt_to_equity=0.3 + i * 0.1,
+                )
+            )
+        for i in range(6):
+            financials.append(
+                _make_financials(
+                    f"ENRG{i}",
+                    roe=5.0 + i * 2,
+                    roic=3.0 + i * 1,
+                    gross_margin=20.0 + i * 2,
+                    debt_to_equity=0.5 + i * 0.2,
+                )
+            )
+
+        sectors = {f"TECH{i}": "Technology" for i in range(6)}
+        sectors.update({f"ENRG{i}": "Energy" for i in range(6)})
+
+        global_scores = scorer.calculate_scores_batch(financials, sectors=None)
+        sector_scores = scorer.calculate_scores_batch(financials, sectors=sectors)
+
+        global_map = {s.symbol: s.quality_score for s in global_scores}
+        sector_map = {s.symbol: s.quality_score for s in sector_scores}
+
+        # The best Energy stock should rank higher within-sector than globally
+        # because globally it's competing against better Tech stocks
+        assert sector_map["ENRG5"] > global_map["ENRG5"]
+
+    def test_missing_sector_falls_back(self):
+        """Symbol not in sectors dict uses global ranking."""
+        scorer = CompositeScorer()
+
+        financials = [
+            _make_financials("KNOWN1", pe_ratio=10.0, roe=25.0),
+            _make_financials("KNOWN2", pe_ratio=20.0, roe=15.0),
+            _make_financials("UNKNOWN", pe_ratio=15.0, roe=20.0),
+            _make_financials("KNOWN3", pe_ratio=25.0, roe=10.0),
+        ]
+
+        # UNKNOWN is not in sectors dict
+        sectors = {
+            "KNOWN1": "Technology",
+            "KNOWN2": "Technology",
+            "KNOWN3": "Energy",
+        }
+
+        scores = scorer.calculate_scores_batch(financials, sectors=sectors)
+        score_map = {s.symbol: s for s in scores}
+
+        # UNKNOWN should still get a valid score (not NaN, not crash)
+        assert 0 <= score_map["UNKNOWN"].composite_score <= 100
+        assert score_map["UNKNOWN"].has_sufficient_data is True

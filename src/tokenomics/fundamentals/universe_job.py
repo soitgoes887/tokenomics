@@ -157,15 +157,16 @@ def main() -> int:
         # Rate limiting: 60 calls/minute = 1 call/second
         rate_limit_delay = 1.0
 
-        print(f"Fetching market cap for {len(all_symbols)} symbols...")
-        print(f"  Rate limit: {rate_limit_delay}s between calls")
-        print(f"  Estimated time: {len(all_symbols) / 60:.0f} minutes")
-        print(f"  Progress updates every 100 symbols (~100 seconds)")
+        print(f"Fetching market cap and sector for {len(all_symbols)} symbols...")
+        print(f"  Rate limit: {rate_limit_delay}s between calls (2 calls per symbol)")
+        print(f"  Estimated time: {len(all_symbols) * 2 / 60:.0f} minutes")
+        print(f"  Progress updates every 100 symbols")
         print("-" * 60)
-        print("  Starting... (first update in ~100 seconds)")
+        print("  Starting... (first update in ~200 seconds)")
         print()
 
         symbols_with_marketcap: list[tuple[str, float]] = []
+        sectors: dict[str, str] = {}
         no_data_count = 0
         error_count = 0
 
@@ -192,6 +193,25 @@ def main() -> int:
                         symbol=symbol,
                     )
 
+                # Fetch sector/industry via company_profile2
+                time.sleep(rate_limit_delay)
+                try:
+                    profile = client.company_profile2(symbol=symbol)
+                    industry = profile.get("finnhubIndustry") if profile else None
+                    if industry:
+                        sectors[symbol] = industry
+                        logger.debug(
+                            "universe_job.sector_fetched",
+                            symbol=symbol,
+                            sector=industry,
+                        )
+                except Exception as e:
+                    logger.debug(
+                        "universe_job.sector_fetch_error",
+                        symbol=symbol,
+                        error=str(e),
+                    )
+
             except Exception as e:
                 error_count += 1
                 logger.warning(
@@ -204,10 +224,11 @@ def main() -> int:
             if (i + 1) % 100 == 0:
                 elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
                 remaining = len(all_symbols) - i - 1
-                eta_minutes = (remaining * rate_limit_delay) / 60
+                eta_minutes = (remaining * rate_limit_delay * 2) / 60
                 print(
                     f"  [{progress_pct:5.1f}%] {i + 1}/{len(all_symbols)} - "
                     f"With data: {len(symbols_with_marketcap)}, "
+                    f"Sectors: {len(sectors)}, "
                     f"No data: {no_data_count}, "
                     f"Errors: {error_count} | "
                     f"ETA: {eta_minutes:.0f}min"
@@ -219,6 +240,7 @@ def main() -> int:
         print("-" * 60)
         print(f"Market cap fetch complete!")
         print(f"  Total with market cap: {len(symbols_with_marketcap)}")
+        print(f"  Total with sector: {len(sectors)}")
         print(f"  No market cap data: {no_data_count}")
         print(f"  Errors: {error_count}")
         print()
@@ -233,7 +255,7 @@ def main() -> int:
 
         # Step 4: Save to Redis
         print("Saving universe to Redis...")
-        store.save_universe(top_symbols)
+        store.save_universe(top_symbols, sectors=sectors)
         print("  Universe saved!")
         print()
 
@@ -247,6 +269,7 @@ def main() -> int:
             duration_seconds=round(duration, 2),
             total_symbols=len(all_symbols),
             with_marketcap=len(symbols_with_marketcap),
+            with_sectors=len(sectors),
             universe_size=len(top_symbols),
             no_data=no_data_count,
             errors=error_count,
@@ -270,6 +293,7 @@ def main() -> int:
         print(f"  Duration:            {duration_minutes:.1f} minutes ({duration:.0f} seconds)")
         print(f"  Total Symbols:       {len(all_symbols)}")
         print(f"  With Market Cap:     {len(symbols_with_marketcap)}")
+        print(f"  With Sector:         {len(sectors)}")
         print(f"  Universe Size:       {len(top_symbols)}")
         print(f"  No Data:             {no_data_count}")
         print(f"  Errors:              {error_count}")

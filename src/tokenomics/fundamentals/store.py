@@ -37,6 +37,7 @@ class FundamentalsStore:
     SCORES_KEY = "fundamentals:scores"
     UNIVERSE_KEY = "fundamentals:universe"
     UNIVERSE_MARKETCAP_KEY = "fundamentals:universe:marketcap"
+    UNIVERSE_SECTORS_KEY = "fundamentals:universe:sectors"
 
     # TTL: 14 days (cronjob runs weekly, so 2x for safety)
     TTL_SECONDS = 14 * 24 * 60 * 60
@@ -364,15 +365,18 @@ class FundamentalsStore:
     def save_universe(
         self,
         symbols_with_marketcap: list[tuple[str, float]],
+        sectors: dict[str, str] | None = None,
     ) -> None:
         """Save the stock universe (top companies by market cap).
 
         Args:
             symbols_with_marketcap: List of (symbol, market_cap) tuples,
                                     already sorted by market cap descending
+            sectors: Optional mapping of symbol -> finnhubIndustry sector string
         """
         now = datetime.now(timezone.utc).isoformat()
         symbols = [s for s, _ in symbols_with_marketcap]
+        universe_ttl = 45 * 24 * 60 * 60  # 45 days
 
         pipeline = self._client.pipeline()
 
@@ -383,21 +387,27 @@ class FundamentalsStore:
             "updated_at": now,
             "count": str(len(symbols)),
         })
-        # Universe TTL: 45 days (job runs monthly, 1.5x for safety)
-        pipeline.expire(self.UNIVERSE_KEY, 45 * 24 * 60 * 60)
+        pipeline.expire(self.UNIVERSE_KEY, universe_ttl)
 
         # Save market cap sorted set for lookups
         pipeline.delete(self.UNIVERSE_MARKETCAP_KEY)
         if symbols_with_marketcap:
             marketcap_dict = {symbol: mcap for symbol, mcap in symbols_with_marketcap}
             pipeline.zadd(self.UNIVERSE_MARKETCAP_KEY, marketcap_dict)
-            pipeline.expire(self.UNIVERSE_MARKETCAP_KEY, 45 * 24 * 60 * 60)
+            pipeline.expire(self.UNIVERSE_MARKETCAP_KEY, universe_ttl)
+
+        # Save sector mappings if provided
+        if sectors:
+            pipeline.delete(self.UNIVERSE_SECTORS_KEY)
+            pipeline.hset(self.UNIVERSE_SECTORS_KEY, mapping=sectors)
+            pipeline.expire(self.UNIVERSE_SECTORS_KEY, universe_ttl)
 
         pipeline.execute()
 
         logger.info(
             "fundamentals_store.universe_saved",
             count=len(symbols),
+            sectors_count=len(sectors) if sectors else 0,
             updated_at=now,
         )
 
@@ -474,3 +484,23 @@ class FundamentalsStore:
             withscores=True,
         )
         return [(symbol, mcap) for symbol, mcap in results]
+
+    def get_sectors(self) -> dict[str, str]:
+        """Get all sector mappings from the universe.
+
+        Returns:
+            Dict mapping symbol -> sector string, or empty dict if not set
+        """
+        data = self._client.hgetall(self.UNIVERSE_SECTORS_KEY)
+        return data if data else {}
+
+    def get_sector(self, symbol: str) -> str | None:
+        """Get the sector for a single symbol.
+
+        Args:
+            symbol: Stock ticker symbol
+
+        Returns:
+            Sector string or None if not found
+        """
+        return self._client.hget(self.UNIVERSE_SECTORS_KEY, symbol)
