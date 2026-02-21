@@ -62,6 +62,7 @@ class RebalancingConfig(BaseModel):
     top_n_stocks: int = Field(default=50, ge=1, le=500)
     weighting: Literal["score", "equal"] = "score"
     max_position_pct: float = Field(default=5.0, gt=0, le=100)
+    max_sector_pct: float = Field(default=25.0, gt=0, le=100)
     min_score: float = Field(default=50.0, ge=0, le=100)
     rebalance_threshold_pct: float = Field(default=20.0, ge=0, le=100)
     min_trade_usd: float = Field(default=100.0, ge=0)

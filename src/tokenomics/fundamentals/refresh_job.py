@@ -119,6 +119,9 @@ class CompanyResult:
     momentum_score: Optional[float] = None
     lowvol_score: Optional[float] = None
 
+    # Sector (from universe job)
+    sector: Optional[str] = None
+
 
 def format_pct(value: Optional[float]) -> str:
     """Format a percentage value for display."""
@@ -139,7 +142,7 @@ def format_score(value: float) -> str:
     return f"{value:>6.1f}"
 
 
-def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None = None) -> None:
+def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None = None, sector_neutral: bool = False) -> None:
     """Print a formatted table of all company results to stdout.
 
     This will be visible in kubectl logs for the cronjob.
@@ -155,7 +158,8 @@ def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None
         header = (
             f"{'Rank':<6} "
             f"{'Symbol':<8} "
-            f"{'Company Name':<35} "
+            f"{'Company Name':<28} "
+            f"{'Sector':<18} "
             f"{'Score':>8} "
             f"{'Value':>8} "
             f"{'Quality':>8} "
@@ -187,7 +191,11 @@ def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None
         lw = scorer_kwargs.get("lowvol_weight", 0.25) if scorer_kwargs else 0.25
 
         print("COMPOSITE SCORING SUMMARY")
-        print(f"  Score = pctrank({vw:.0%}*Value + {qw:.0%}*Quality + {mw:.0%}*Momentum + {lw:.0%}*LowVol)")
+        if sector_neutral:
+            print(f"  Score = pctrank({vw:.0%}*Value_sec + {qw:.0%}*Quality_sec + {mw:.0%}*Momentum_sec + {lw:.0%}*LowVol_sec)")
+            print(f"  *_sec = within-sector percentile rank")
+        else:
+            print(f"  Score = pctrank({vw:.0%}*Value + {qw:.0%}*Quality + {mw:.0%}*Momentum + {lw:.0%}*LowVol)")
         print(f"  Value   = pctrank(avg_z(EarningsYield, FCFY, BookPrice))")
         print(f"  Quality = pctrank(avg_z(ROE, ROIC, GrossMargin, LeverageScore))")
         print(f"  Momntm  = pctrank(z(52wk_return))")
@@ -201,13 +209,17 @@ def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None
 
     for rank, result in enumerate(sorted_results, 1):
         # Truncate company name if too long
-        name = result.name[:33] + ".." if len(result.name) > 35 else result.name
+        name = result.name[:26] + ".." if len(result.name) > 28 else result.name
 
         if is_v3:
+            sector = (result.sector or "N/A")[:16]
+            if len(result.sector or "") > 18:
+                sector = (result.sector or "")[:16] + ".."
             row = (
                 f"{rank:<6} "
                 f"{result.symbol:<8} "
-                f"{name:<35} "
+                f"{name:<28} "
+                f"{sector:<18} "
                 f"{format_score(result.score):>8} "
                 f"{format_score(result.value_score) if result.value_score is not None else 'N/A':>8} "
                 f"{format_score(result.quality_score) if result.quality_score is not None else 'N/A':>8} "
@@ -392,6 +404,18 @@ def main() -> int:
         # No descriptions available from universe - use symbol as name
         symbol_names = {s: s for s in symbol_list}
 
+        # Load sector data for sector-neutral scoring
+        all_sectors = store.get_sectors()
+        sector_neutral = bool(all_sectors)
+        if sector_neutral:
+            print(f"  Sector data: {len(all_sectors)} symbols with sectors")
+            # Count unique sectors
+            unique_sectors = set(all_sectors.values())
+            print(f"  Unique sectors: {len(unique_sectors)}")
+        else:
+            print(f"  Sector data: NOT AVAILABLE (run universe_job to populate)")
+        print()
+
         logger.info(
             "fundamentals_job.using_universe",
             universe_count=universe.get("count"),
@@ -562,7 +586,10 @@ def main() -> int:
         # Phase 2 — Batch score all fetched financials
         if fetched:
             financials_list = [f for _, f in fetched]
-            scores = scorer.calculate_scores_batch(financials_list)
+            scores = scorer.calculate_scores_batch(
+                financials_list,
+                sectors=all_sectors if sector_neutral else None,
+            )
 
             for (name, financials), score in zip(fetched, scores):
                 batch.append((financials, score))
@@ -582,6 +609,7 @@ def main() -> int:
                     quality_score=score.quality_score,
                     momentum_score=score.momentum_score,
                     lowvol_score=score.lowvol_score,
+                    sector=all_sectors.get(financials.symbol),
                 )
                 results.append(result)
 
@@ -641,7 +669,7 @@ def main() -> int:
         )
 
         # Print the summary table
-        print_summary_table(results, scorer_kwargs=profile.scorer_kwargs)
+        print_summary_table(results, scorer_kwargs=profile.scorer_kwargs, sector_neutral=sector_neutral)
 
         # Show what was updated in this run
         updated_results = [r for r in results if r.status == "success"]
@@ -652,11 +680,11 @@ def main() -> int:
             updated_results.sort(key=lambda x: x.score, reverse=True)
             print()
             if is_v3:
-                print("=" * 86)
+                print("=" * 102)
                 print(f"UPDATED THIS RUN: {len(updated_results)} companies")
-                print("=" * 86)
-                print(f"{'Symbol':<8} {'Score':>8} {'Prev':>8} {'Change':>8} {'Value':>8} {'Quality':>8} {'Momntm':>8} {'LowVol':>8}")
-                print("-" * 86)
+                print("=" * 102)
+                print(f"{'Symbol':<8} {'Sector':<18} {'Score':>8} {'Prev':>8} {'Change':>8} {'Value':>8} {'Quality':>8} {'Momntm':>8} {'LowVol':>8}")
+                print("-" * 102)
                 for r in updated_results[:30]:  # Show top 30
                     prev_str = f"{r.previous_score:.1f}" if r.previous_score is not None else "NEW"
                     if r.previous_score is not None:
@@ -664,11 +692,12 @@ def main() -> int:
                         change_str = f"{change:+.1f}"
                     else:
                         change_str = "-"
+                    sector = (r.sector or "N/A")[:16]
                     val_str = f"{r.value_score:.1f}" if r.value_score is not None else "N/A"
                     qual_str = f"{r.quality_score:.1f}" if r.quality_score is not None else "N/A"
                     mom_str = f"{r.momentum_score:.1f}" if r.momentum_score is not None else "N/A"
                     lvol_str = f"{r.lowvol_score:.1f}" if r.lowvol_score is not None else "N/A"
-                    print(f"{r.symbol:<8} {r.score:>8.1f} {prev_str:>8} {change_str:>8} {val_str:>8} {qual_str:>8} {mom_str:>8} {lvol_str:>8}")
+                    print(f"{r.symbol:<8} {sector:<18} {r.score:>8.1f} {prev_str:>8} {change_str:>8} {val_str:>8} {qual_str:>8} {mom_str:>8} {lvol_str:>8}")
             else:
                 print("=" * 70)
                 print(f"UPDATED THIS RUN: {len(updated_results)} companies")

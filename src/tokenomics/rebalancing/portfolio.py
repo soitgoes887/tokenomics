@@ -23,6 +23,8 @@ def compute_target_weights(
     weighting: Literal["score", "equal"] = "score",
     max_position_pct: float = 5.0,
     min_score: float = 50.0,
+    max_sector_pct: float = 100.0,
+    sectors: dict[str, str] | None = None,
 ) -> TargetPortfolio:
     """Compute target portfolio weights from fundamental scores.
 
@@ -32,6 +34,8 @@ def compute_target_weights(
         weighting: "score" for score-proportional, "equal" for equal weight
         max_position_pct: Maximum weight per stock (percentage, e.g., 5.0 = 5%)
         min_score: Minimum score to include (filter out low-quality stocks)
+        max_sector_pct: Maximum weight per sector (percentage, e.g., 25.0 = 25%)
+        sectors: Optional mapping of symbol -> sector for sector cap enforcement
 
     Returns:
         TargetPortfolio with normalized weights summing to 1.0
@@ -89,6 +93,55 @@ def compute_target_weights(
             "portfolio.weights_capped",
             max_position_pct=max_position_pct,
         )
+
+    # Apply sector cap if sectors provided and max_sector_pct < 100
+    if sectors and max_sector_pct < 100.0:
+        max_sector_weight = max_sector_pct / 100.0
+        sector_capped = False
+
+        # Iteratively cap sectors (may need multiple passes since re-normalization
+        # can push other sectors over the limit)
+        for _ in range(5):  # Max 5 iterations to converge
+            # Compute sector weights
+            sector_weights: dict[str, float] = {}
+            for symbol, w in weights.items():
+                sec = sectors.get(symbol, "__unknown__")
+                sector_weights[sec] = sector_weights.get(sec, 0.0) + w
+
+            # Find sectors over limit
+            over_sectors = {s: sw for s, sw in sector_weights.items() if sw > max_sector_weight}
+            if not over_sectors:
+                break
+
+            sector_capped = True
+            for sector, sector_total in over_sectors.items():
+                # Scale down all positions in this sector proportionally
+                scale = max_sector_weight / sector_total
+                for symbol in weights:
+                    if sectors.get(symbol, "__unknown__") == sector:
+                        weights[symbol] *= scale
+
+            # Re-normalize
+            total = sum(weights.values())
+            if total > 0:
+                weights = {s: w / total for s, w in weights.items()}
+
+        if sector_capped:
+            # Log final sector weights
+            final_sector_weights: dict[str, float] = {}
+            for symbol, w in weights.items():
+                sec = sectors.get(symbol, "__unknown__")
+                final_sector_weights[sec] = final_sector_weights.get(sec, 0.0) + w
+
+            logger.info(
+                "portfolio.sector_weights_capped",
+                max_sector_pct=max_sector_pct,
+                sector_count=len(final_sector_weights),
+                top_sectors=sorted(
+                    final_sector_weights.items(),
+                    key=lambda x: -x[1],
+                )[:5],
+            )
 
     # Log top 10 weights
     sorted_weights = sorted(weights.items(), key=lambda x: -x[1])

@@ -85,12 +85,22 @@ class RebalancingEngine:
             # Step 2: Compute target weights
             print("Computing target portfolio weights...")
             rebal_config = self._config.rebalancing
+
+            # Load sector data for sector caps
+            sectors = self._store.get_sectors()
+            if sectors:
+                print(f"  Sector data: {len(sectors)} symbols, max {rebal_config.max_sector_pct}% per sector")
+            else:
+                print(f"  Sector data: NOT AVAILABLE (no sector caps applied)")
+
             target = compute_target_weights(
                 scores=scores,
                 top_n=rebal_config.top_n_stocks,
                 weighting=rebal_config.weighting,
                 max_position_pct=rebal_config.max_position_pct,
                 min_score=rebal_config.min_score,
+                max_sector_pct=rebal_config.max_sector_pct,
+                sectors=sectors if sectors else None,
             )
 
             if target.stock_count == 0:

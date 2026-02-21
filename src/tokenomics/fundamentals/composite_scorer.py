@@ -49,16 +49,20 @@ class CompositeScorer(BaseScorer):
         )
 
     def calculate_scores_batch(
-        self, financials_list: list[BasicFinancials]
+        self,
+        financials_list: list[BasicFinancials],
+        sectors: dict[str, str] | None = None,
     ) -> list[FundamentalsScore]:
         """Score the full universe cross-sectionally.
 
         Algorithm:
             1. Derive value/quality/momentum/lowvol metrics
             2. Z-score each metric across the universe
-            3. Average z-scores within each factor → percentile rank (1-100)
-            4. Composite = weighted sum of factor ranks (re-weight on NaN)
-            5. Final score = percentile rank of composite (1-100)
+            3. Average z-scores within each factor → percentile rank
+               - If sectors provided: percentile rank within each sector
+               - Otherwise: global percentile rank
+            4. Composite = weighted sum of factor ranks (require all 4)
+            5. Final score = global percentile rank of composite (1-100)
         """
         if not financials_list:
             return []
@@ -83,6 +87,20 @@ class CompositeScorer(BaseScorer):
 
         df = pd.DataFrame(rows).set_index("symbol")
 
+        # Add sector column if provided
+        sector_col = None
+        if sectors:
+            df["sector"] = df.index.map(lambda s: sectors.get(s))
+            # Only use sector-neutral ranking if enough symbols have sectors
+            has_sector = df["sector"].notna()
+            if has_sector.sum() >= 10:
+                sector_col = "sector"
+                logger.info(
+                    "composite_scorer.sector_neutral_enabled",
+                    with_sector=int(has_sector.sum()),
+                    without_sector=int((~has_sector).sum()),
+                )
+
         # --- Derived metrics ---
         # Value: higher = cheaper
         df["earnings_yield"] = self._safe_inverse(df["pe_ratio"])
@@ -100,16 +118,16 @@ class CompositeScorer(BaseScorer):
 
         # --- Sub-scores via z-score → percentile ---
         value_rank = self._avg_z_then_percentile(
-            df, ["earnings_yield", "fcfy", "bp"]
+            df, ["earnings_yield", "fcfy", "bp"], sector_col=sector_col
         )
         quality_rank = self._avg_z_then_percentile(
-            df, ["roe", "roic", "gross_margin", "leverage_score"]
+            df, ["roe", "roic", "gross_margin", "leverage_score"], sector_col=sector_col
         )
         momentum_rank = self._avg_z_then_percentile(
-            df, ["price_return_52_week"]
+            df, ["price_return_52_week"], sector_col=sector_col
         )
         lowvol_rank = self._avg_z_then_percentile(
-            df, ["inv_beta", "inv_range_vol"]
+            df, ["inv_beta", "inv_range_vol"], sector_col=sector_col
         )
 
         # Combine into result DataFrame
@@ -197,9 +215,13 @@ class CompositeScorer(BaseScorer):
         return (ranked * 100).round(2)
 
     def _avg_z_then_percentile(
-        self, df: pd.DataFrame, cols: list[str]
+        self, df: pd.DataFrame, cols: list[str], sector_col: str | None = None
     ) -> pd.Series:
-        """Z-score each column, average, then percentile rank."""
+        """Z-score each column, average, then percentile rank.
+
+        If sector_col is provided, percentile rank is computed within each
+        sector group. Symbols without a sector fall back to global ranking.
+        """
         z_cols = []
         for col in cols:
             if col in df.columns:
@@ -212,10 +234,30 @@ class CompositeScorer(BaseScorer):
         z_df = pd.concat(z_cols, axis=1)
         avg_z = z_df.mean(axis=1, skipna=True)
         # If all components are NaN for a row, mean returns NaN — correct.
-        # If only some are NaN, mean of available — correct (partial data).
-        # Mark as NaN if ALL components were NaN
         all_nan = z_df.isna().all(axis=1)
         avg_z[all_nan] = np.nan
+
+        if sector_col and sector_col in df.columns:
+            # Within-sector percentile ranking
+            result = pd.Series(np.nan, index=df.index)
+            has_sector = df[sector_col].notna()
+
+            # Rank within each sector
+            temp = pd.DataFrame({"avg_z": avg_z, "sector": df[sector_col]})
+            sectored = temp[has_sector]
+            if not sectored.empty:
+                sector_ranks = sectored.groupby("sector")["avg_z"].rank(
+                    pct=True, na_option="keep"
+                )
+                result[sector_ranks.index] = (sector_ranks * 100).round(2)
+
+            # Fallback: global rank for symbols without a sector
+            no_sector = temp[~has_sector]
+            if not no_sector.empty:
+                global_rank = self._percentile_rank(no_sector["avg_z"])
+                result[global_rank.index] = global_rank
+
+            return result
 
         return self._percentile_rank(avg_z)
 

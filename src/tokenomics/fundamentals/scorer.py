@@ -55,7 +55,9 @@ class BaseScorer(ABC):
         ...
 
     def calculate_scores_batch(
-        self, financials_list: list[BasicFinancials]
+        self,
+        financials_list: list[BasicFinancials],
+        sectors: dict[str, str] | None = None,
     ) -> list[FundamentalsScore]:
         """Calculate scores for multiple companies at once.
 
@@ -64,6 +66,7 @@ class BaseScorer(ABC):
 
         Args:
             financials_list: List of BasicFinancials for all companies
+            sectors: Optional mapping of symbol -> sector for sector-neutral ranking
 
         Returns:
             List of FundamentalsScore in the same order as input
