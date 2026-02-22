@@ -304,3 +304,59 @@ class TestCompositeScorer:
         # UNKNOWN should still get a valid score (not NaN, not crash)
         assert 0 <= score_map["UNKNOWN"].composite_score <= 100
         assert score_map["UNKNOWN"].has_sufficient_data is True
+
+    def test_small_sector_falls_back_to_global(self):
+        """Sectors with fewer than MIN_SECTOR_SIZE stocks use global ranking.
+
+        A 1-stock sector should NOT get 100.0 for all sub-scores.
+        """
+        scorer = CompositeScorer()
+
+        # Create 6 Tech stocks (above MIN_SECTOR_SIZE=5) and 1 Marine stock
+        financials = []
+        for i in range(6):
+            financials.append(
+                _make_financials(
+                    f"TECH{i}",
+                    roe=10.0 + i * 5,
+                    roic=8.0 + i * 3,
+                    gross_margin=30.0 + i * 5,
+                    debt_to_equity=0.3 + i * 0.2,
+                    pe_ratio=10.0 + i * 5,
+                    price_return_52_week=-5.0 + i * 8,
+                    beta=0.6 + i * 0.2,
+                )
+            )
+        # Single Marine stock — should fall back to global ranking
+        financials.append(
+            _make_financials(
+                "MARINE1",
+                roe=20.0,
+                roic=15.0,
+                gross_margin=45.0,
+                debt_to_equity=0.5,
+                pe_ratio=12.0,
+                price_return_52_week=10.0,
+                beta=1.0,
+            )
+        )
+
+        sectors = {f"TECH{i}": "Technology" for i in range(6)}
+        sectors["MARINE1"] = "Marine"
+
+        scores = scorer.calculate_scores_batch(financials, sectors=sectors)
+        score_map = {s.symbol: s for s in scores}
+
+        # Marine stock should NOT have all 100.0 sub-scores
+        marine = score_map["MARINE1"]
+        all_100 = (
+            marine.value_score == 100.0
+            and marine.quality_score == 100.0
+            and marine.momentum_score == 100.0
+            and marine.lowvol_score == 100.0
+        )
+        assert not all_100, (
+            f"Single-stock sector should not get all 100.0 sub-scores, "
+            f"got V={marine.value_score} Q={marine.quality_score} "
+            f"M={marine.momentum_score} LV={marine.lowvol_score}"
+        )
