@@ -26,12 +26,13 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import structlog
 from pydantic_settings import BaseSettings
 
-from tokenomics.config import load_config, resolve_profile
+from tokenomics.config import PostFiltersConfig, load_config, resolve_profile
 from tokenomics.fundamentals import (
     FinancialsFetchError,
     FinnhubFinancialsProvider,
@@ -97,6 +98,181 @@ def setup_cronjob_logging() -> None:
 # Configure logging at import time
 setup_cronjob_logging()
 logger = structlog.get_logger(__name__)
+
+
+def load_exclusion_list(file_path: Optional[str]) -> set[str]:
+    """Load excluded symbols from a text file (one symbol per line).
+
+    Returns an empty set if no file is configured or the file doesn't exist.
+    """
+    if not file_path:
+        return set()
+
+    path = Path(file_path)
+    if not path.is_file():
+        logger.warning(
+            "fundamentals_job.exclusion_list_not_found",
+            path=str(path),
+        )
+        return set()
+
+    symbols = set()
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            symbols.add(stripped.upper())
+
+    logger.info(
+        "fundamentals_job.exclusion_list_loaded",
+        path=str(path),
+        count=len(symbols),
+    )
+    return symbols
+
+
+import re
+
+# Share-class suffixes: GOOGL→GOOG, BF.B→BF, BIO.B→BIO, BRK.A→BRK, etc.
+_SHARE_CLASS_RE = re.compile(
+    r"^(?P<issuer>.+?)(?:\.[A-Z]|[A-Z])$"
+)
+
+# Known multi-class issuers where the longer ticker is a share class.
+# Maps (base, variant) pairs, e.g. GOOG/GOOGL both → "GOOG".
+_KNOWN_SHARE_CLASSES: dict[str, str] = {
+    # Alphabet
+    "GOOG": "GOOG",
+    "GOOGL": "GOOG",
+    # Berkshire Hathaway
+    "BRK.A": "BRK",
+    "BRK.B": "BRK",
+    # Brown-Forman
+    "BF.A": "BF",
+    "BF.B": "BF",
+    # Bio-Rad
+    "BIO": "BIO",
+    "BIO.B": "BIO",
+    # Fox Corp
+    "FOX": "FOX",
+    "FOXA": "FOX",
+    # News Corp
+    "NWS": "NWS",
+    "NWSA": "NWS",
+    # Heico
+    "HEI": "HEI",
+    "HEI.A": "HEI",
+    # Lennar
+    "LEN": "LEN",
+    "LEN.B": "LEN",
+    # Under Armour
+    "UA": "UA",
+    "UAA": "UA",
+    # Zillow
+    "Z": "Z",
+    "ZG": "Z",
+    # Discovery / Warner Bros Discovery
+    "WBD": "WBD",
+    "WBDA": "WBD",
+    # Moog
+    "MOG.A": "MOG",
+    "MOG.B": "MOG",
+}
+
+
+def _issuer_key(symbol: str) -> str:
+    """Map a ticker to its canonical issuer key for deduplication.
+
+    Uses the known share-class table first, then falls back to stripping
+    dot-suffixes (e.g. XYZ.B → XYZ).
+    """
+    if symbol in _KNOWN_SHARE_CLASSES:
+        return _KNOWN_SHARE_CLASSES[symbol]
+
+    # Fallback: strip ".A", ".B", etc.
+    if "." in symbol:
+        base = symbol.rsplit(".", 1)[0]
+        return base
+
+    return symbol
+
+
+def apply_post_filters(
+    batch: list[tuple],
+    scores_by_symbol: dict[str, "FundamentalsScore"],
+    filters: PostFiltersConfig,
+) -> tuple[list[tuple], dict[str, str]]:
+    """Apply post-scoring filters to the batch before saving to Redis.
+
+    Args:
+        batch: List of (BasicFinancials, FundamentalsScore) tuples
+        scores_by_symbol: Map of symbol → FundamentalsScore for all scored stocks
+                          (including cached) to support deduplication
+        filters: PostFiltersConfig with thresholds
+
+    Returns:
+        Tuple of (filtered_batch, removed_reasons) where removed_reasons maps
+        symbol → reason string for every removed stock
+    """
+    removed: dict[str, str] = {}
+
+    if not batch:
+        return batch, removed
+
+    # 1. Quality filter
+    if filters.min_quality is not None:
+        kept = []
+        for financials, score in batch:
+            if score.quality_score is not None and score.quality_score < filters.min_quality:
+                removed[score.symbol] = f"quality_score {score.quality_score:.1f} < {filters.min_quality}"
+            else:
+                kept.append((financials, score))
+        batch = kept
+
+    # 2. Speculative filter (LowVol < X AND Value < Y)
+    if filters.speculative_lowvol is not None and filters.speculative_value is not None:
+        kept = []
+        for financials, score in batch:
+            is_speculative = (
+                score.lowvol_score is not None
+                and score.value_score is not None
+                and score.lowvol_score < filters.speculative_lowvol
+                and score.value_score < filters.speculative_value
+            )
+            if is_speculative:
+                removed[score.symbol] = (
+                    f"speculative: lowvol {score.lowvol_score:.1f} < {filters.speculative_lowvol} "
+                    f"AND value {score.value_score:.1f} < {filters.speculative_value}"
+                )
+            else:
+                kept.append((financials, score))
+        batch = kept
+
+    # 3. Deduplicate share classes
+    if filters.deduplicate_share_classes:
+        # Build issuer → best (financials, score) map using ALL scores (batch + cached)
+        # so we can detect duplicates even across cache boundaries
+        all_symbols_in_batch = {score.symbol for _, score in batch}
+
+        issuer_best: dict[str, tuple[str, float]] = {}  # issuer_key → (symbol, score)
+        for symbol, fscore in scores_by_symbol.items():
+            key = _issuer_key(symbol)
+            if key not in issuer_best or fscore.composite_score > issuer_best[key][1]:
+                issuer_best[key] = (symbol, fscore.composite_score)
+
+        kept = []
+        for financials, score in batch:
+            key = _issuer_key(score.symbol)
+            best_symbol, best_score = issuer_best[key]
+            if best_symbol != score.symbol:
+                removed[score.symbol] = (
+                    f"duplicate share class: keeping {best_symbol} ({best_score:.1f}) "
+                    f"over {score.symbol} ({score.composite_score:.1f})"
+                )
+            else:
+                kept.append((financials, score))
+        batch = kept
+
+    return batch, removed
 
 
 @dataclass
@@ -248,6 +424,7 @@ def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None
     cached = [r for r in results if r.status == "cached"]
     failed = [r for r in results if r.status == "failed"]
     no_data = [r for r in results if r.status == "no_data"]
+    filtered = [r for r in results if r.status == "filtered"]
 
     # Include both successful and cached in score stats
     with_scores = [r for r in results if r.status in ("success", "cached", "no_data")]
@@ -264,6 +441,8 @@ def print_summary_table(results: list[CompanyResult], scorer_kwargs: dict | None
         print(f"  Fresh API Calls:    {len(successful)}")
         print(f"  No Data:            {len(no_data)}")
         print(f"  Failed:             {len(failed)}")
+        if filtered:
+            print(f"  Filtered Out:       {len(filtered)}")
         print(f"  Average Score:      {avg_score:.1f}")
         print(f"  Max Score:          {max_score:.1f}")
         print(f"  Min Score:          {min_score:.1f}")
@@ -399,6 +578,23 @@ def main() -> int:
         print(f"  Universe age: {universe_age:.1f} days" if universe_age else "  Universe age: unknown")
         print(f"  Total in universe: {universe.get('count')}")
         print(f"  Using top {len(symbol_list)} by market cap")
+
+        # Apply exclusion list
+        excluded_symbols = load_exclusion_list(profile.exclusion_list)
+        if excluded_symbols:
+            before_count = len(symbol_list)
+            symbol_list = [s for s in symbol_list if s not in excluded_symbols]
+            excluded_count = before_count - len(symbol_list)
+            print(f"  Exclusion list: {len(excluded_symbols)} symbols configured, {excluded_count} removed")
+            logger.info(
+                "fundamentals_job.exclusions_applied",
+                configured=len(excluded_symbols),
+                removed=excluded_count,
+                remaining=len(symbol_list),
+            )
+        else:
+            print(f"  Exclusion list: none configured")
+
         print()
 
         # No descriptions available from universe - use symbol as name
@@ -625,6 +821,56 @@ def main() -> int:
                     has_data=score.has_sufficient_data,
                 )
 
+        # Phase 2b — Apply post-scoring filters
+        filters = profile.post_filters
+        has_any_filter = (
+            filters.min_quality is not None
+            or (filters.speculative_lowvol is not None and filters.speculative_value is not None)
+            or filters.deduplicate_share_classes
+        )
+
+        filtered_count = 0
+        if has_any_filter and batch:
+            # Build scores_by_symbol from both fresh scores and cached results
+            # so deduplication can compare across cache boundaries
+            all_scores_map: dict[str, FundamentalsScore] = {}
+            for _, score in batch:
+                all_scores_map[score.symbol] = score
+            # Include cached results as FundamentalsScore-like objects for dedup
+            for r in results:
+                if r.status == "cached" and r.symbol not in all_scores_map:
+                    all_scores_map[r.symbol] = FundamentalsScore(
+                        symbol=r.symbol,
+                        composite_score=r.score,
+                        has_sufficient_data=True,
+                        value_score=r.value_score,
+                        quality_score=r.quality_score,
+                        momentum_score=r.momentum_score,
+                        lowvol_score=r.lowvol_score,
+                    )
+
+            before_count = len(batch)
+            batch, removed_reasons = apply_post_filters(batch, all_scores_map, filters)
+            filtered_count = before_count - len(batch)
+
+            if removed_reasons:
+                print(f"\n  Post-scoring filters removed {filtered_count} stocks:")
+                for sym, reason in sorted(removed_reasons.items()):
+                    print(f"    {sym}: {reason}")
+                    # Update the result status
+                    for r in results:
+                        if r.symbol == sym and r.status in ("success", "no_data"):
+                            r.status = "filtered"
+                            break
+
+                logger.info(
+                    "fundamentals_job.post_filters_applied",
+                    removed=filtered_count,
+                    remaining=len(batch),
+                    reasons={s: r for s, r in list(removed_reasons.items())[:20]},
+                )
+                print()
+
         # Phase 3 — Save to Redis in batches
         saved_so_far = 0
         while saved_so_far < len(batch):
@@ -663,6 +909,7 @@ def main() -> int:
             success=success_count,
             failed=failed_count,
             no_data=no_data_count,
+            filtered=filtered_count,
             retries=retry_count,
             total_in_store=total_in_store,
             top_10=[(s, round(score, 1)) for s, score in top_companies],
@@ -731,6 +978,8 @@ def main() -> int:
         print(f"    Skipped (cached): {cached_count}")
         print(f"    No data:          {no_data_count}")
         print(f"    Failed:           {failed_count}")
+        if filtered_count:
+            print(f"    Filtered out:     {filtered_count}")
         print()
         print("Job completed successfully!")
         print("=" * 60)

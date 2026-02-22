@@ -30,6 +30,7 @@ scoring_profiles:
     alpaca_api_key_env: "ALPACA_API_KEY"
     alpaca_secret_key_env: "ALPACA_SECRET_KEY"
     description: "Original 3-factor scorer (ROE/Debt/Growth)"
+    exclusion_list: "config/exclusions/v2-exclusion-list.txt"
 
   tokenomics_v3_composite:
     scorer_class: "CompositeScorer"
@@ -37,11 +38,17 @@ scoring_profiles:
     alpaca_api_key_env: "ALPACA_API_KEY_V3"
     alpaca_secret_key_env: "ALPACA_SECRET_KEY_V3"
     description: "4-factor composite (Value/Quality/Momentum/LowVol)"
+    exclusion_list: "config/exclusions/v3-exclusion-list.txt"
     scorer_kwargs:
       value_weight: 0.20
       quality_weight: 0.30
       momentum_weight: 0.40
       lowvol_weight: 0.10
+    post_filters:
+      min_quality: 50.0                 # Hard rule: exclude Quality_sec < 50
+      speculative_lowvol: 10.0          # Speculative filter: LowVol_sec < 10 AND ...
+      speculative_value: 30.0           # ... Value_sec < 30 → exclude
+      deduplicate_share_classes: true    # Keep only one share class per issuer
 
   default_profile: "tokenomics_v2_base"
 
