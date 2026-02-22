@@ -68,6 +68,27 @@ class RebalancingConfig(BaseModel):
     min_trade_usd: float = Field(default=100.0, ge=0)
 
 
+class PostFiltersConfig(BaseModel):
+    """Post-scoring filters applied after batch scoring, before saving to Redis."""
+
+    min_quality: Optional[float] = Field(
+        default=None, ge=0, le=100,
+        description="Exclude stocks with Quality sub-score below this threshold",
+    )
+    speculative_lowvol: Optional[float] = Field(
+        default=None, ge=0, le=100,
+        description="LowVol threshold for speculative filter (requires speculative_value too)",
+    )
+    speculative_value: Optional[float] = Field(
+        default=None, ge=0, le=100,
+        description="Value threshold for speculative filter (requires speculative_lowvol too)",
+    )
+    deduplicate_share_classes: bool = Field(
+        default=False,
+        description="Keep only one share class per issuer (highest score wins)",
+    )
+
+
 class ScoringProfileConfig(BaseModel):
     """Configuration for a single scoring profile."""
 
@@ -77,6 +98,8 @@ class ScoringProfileConfig(BaseModel):
     alpaca_secret_key_env: str
     description: str = ""
     scorer_kwargs: dict[str, float] = Field(default_factory=dict)
+    exclusion_list: Optional[str] = None
+    post_filters: PostFiltersConfig = Field(default_factory=PostFiltersConfig)
 
 
 class ScoringProfilesConfig(BaseModel):
