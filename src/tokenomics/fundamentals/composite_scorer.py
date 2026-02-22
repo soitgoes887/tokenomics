@@ -22,6 +22,11 @@ class CompositeScorer(BaseScorer):
     z-scores and percentile ranks. Use calculate_scores_batch().
     """
 
+    # Minimum number of stocks in a sector to use within-sector ranking.
+    # Sectors with fewer stocks fall back to global ranking to avoid
+    # extreme percentile scores (e.g., 100.0 for a sole stock in a sector).
+    MIN_SECTOR_SIZE = 5
+
     def __init__(
         self,
         value_weight: float = 0.30,
@@ -93,12 +98,21 @@ class CompositeScorer(BaseScorer):
             df["sector"] = df.index.map(lambda s: sectors.get(s))
             # Only use sector-neutral ranking if enough symbols have sectors
             has_sector = df["sector"].notna()
-            if has_sector.sum() >= 10:
+            n_with: int = has_sector.sum().item()
+            n_without: int = (~has_sector).sum().item()
+            if n_with >= 10:
                 sector_col = "sector"
+                # Count large vs small sectors
+                sector_counts = df.loc[has_sector, "sector"].value_counts()
+                n_large = int((sector_counts >= self.MIN_SECTOR_SIZE).sum())
+                n_small = int((sector_counts < self.MIN_SECTOR_SIZE).sum())
                 logger.info(
                     "composite_scorer.sector_neutral_enabled",
-                    with_sector=int(has_sector.sum()),
-                    without_sector=int((~has_sector).sum()),
+                    with_sector=n_with,
+                    without_sector=n_without,
+                    large_sectors=n_large,
+                    small_sectors_global_fallback=n_small,
+                    min_sector_size=self.MIN_SECTOR_SIZE,
                 )
 
         # --- Derived metrics ---
@@ -242,14 +256,27 @@ class CompositeScorer(BaseScorer):
             result = pd.Series(np.nan, index=df.index)
             has_sector = df[sector_col].notna()
 
-            # Rank within each sector
             temp = pd.DataFrame({"avg_z": avg_z, "sector": df[sector_col]})
             sectored = temp[has_sector]
+
             if not sectored.empty:
-                sector_ranks = sectored.groupby("sector")["avg_z"].rank(
-                    pct=True, na_option="keep"
-                )
-                result[sector_ranks.index] = (sector_ranks * 100).round(2)
+                # Identify sectors large enough for within-sector ranking
+                sector_sizes = sectored.groupby("sector")["avg_z"].transform("count")
+                large_enough = sector_sizes >= self.MIN_SECTOR_SIZE
+
+                # Rank within large sectors
+                large_sector = sectored[large_enough]
+                if not large_sector.empty:
+                    sector_ranks = large_sector.groupby("sector")["avg_z"].rank(
+                        pct=True, na_option="keep"
+                    )
+                    result[sector_ranks.index] = (sector_ranks * 100).round(2)
+
+                # Small sectors fall back to global ranking
+                small_sector = sectored[~large_enough]
+                if not small_sector.empty:
+                    global_rank = self._percentile_rank(small_sector["avg_z"])
+                    result[global_rank.index] = global_rank
 
             # Fallback: global rank for symbols without a sector
             no_sector = temp[~has_sector]
