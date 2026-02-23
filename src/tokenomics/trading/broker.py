@@ -335,6 +335,35 @@ class AlpacaBrokerProvider(BrokerProvider):
             )
             raise OrderError(f"Sell order failed for {symbol}: {e}") from e
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    def close_position(self, symbol: str) -> str:
+        """Close an entire position using Alpaca's close_position API.
+
+        This avoids the notional→qty rounding mismatch by telling Alpaca
+        to liquidate the exact held quantity.
+
+        Returns:
+            Order ID
+        """
+        try:
+            order = self._client.close_position(symbol)
+
+            logger.info(
+                "broker.position_closed",
+                order_id=str(order.id),
+                symbol=symbol,
+            )
+
+            return str(order.id)
+
+        except Exception as e:
+            logger.error(
+                "broker.close_position_failed",
+                symbol=symbol,
+                error=str(e),
+            )
+            raise OrderError(f"Close position failed for {symbol}: {e}") from e
+
     def get_account(self) -> dict:
         """Get current account info."""
         account = self._client.get_account()

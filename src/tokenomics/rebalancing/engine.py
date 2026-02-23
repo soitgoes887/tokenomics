@@ -196,7 +196,10 @@ class RebalancingEngine:
             for trade in trades.sells:
                 try:
                     print(f"  SELL ~{trade.shares:.2f} {trade.symbol} (${trade.notional_usd:,.0f}) - {trade.reason}")
-                    order_id = self._broker.submit_sell_order_notional(trade.symbol, trade.notional_usd)
+                    if trade.is_full_exit:
+                        order_id = self._broker.close_position(trade.symbol)
+                    else:
+                        order_id = self._broker.submit_sell_order_notional(trade.symbol, trade.notional_usd)
                     logger.info(
                         "rebalancer.order_executed",
                         side="sell",
@@ -204,6 +207,7 @@ class RebalancingEngine:
                         shares=trade.shares,
                         notional_usd=trade.notional_usd,
                         order_id=order_id,
+                        full_exit=trade.is_full_exit,
                     )
                     executed_sells += 1
                 except Exception as e:

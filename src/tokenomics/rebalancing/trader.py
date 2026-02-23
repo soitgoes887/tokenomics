@@ -25,6 +25,7 @@ class Trade:
     current_weight: float
     target_weight: float
     reason: str
+    is_full_exit: bool = False  # True when closing entire position
 
 
 @dataclass
@@ -155,6 +156,7 @@ def generate_trades(
                 current_weight=current_weight,
                 target_weight=target_weight,
                 reason=reason,
+                is_full_exit=(target_weight == 0),
             )
             sells.append(trade)
 

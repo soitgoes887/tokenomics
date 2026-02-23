@@ -44,6 +44,11 @@ class BrokerProvider(ABC):
         ...
 
     @abstractmethod
+    def close_position(self, symbol: str) -> str:
+        """Close an entire position. Returns order ID."""
+        ...
+
+    @abstractmethod
     def get_clock(self) -> dict:
         """Get market clock details (is_open, next_open, next_close)."""
         ...
