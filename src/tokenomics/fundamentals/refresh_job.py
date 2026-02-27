@@ -624,6 +624,12 @@ def main() -> int:
             logger.error("fundamentals_job.no_symbols")
             return 1
 
+        # Snapshot old top N index before scoring begins
+        top_n = config.rebalancing.top_n_stocks if config else 100
+        old_top_n = store.get_top_scores(top_n)
+        old_top_set = {symbol for symbol, _ in old_top_n}
+        old_top_ranks = {symbol: rank for rank, (symbol, _) in enumerate(old_top_n, 1)}
+
         # Step 2: Fetch financials for each company
         # Rate limiting: 60 calls/minute = 1 call/second
         # Retry: up to 3 attempts with 2 second delay between retries
@@ -891,6 +897,74 @@ def main() -> int:
         print("-" * 60)
         print(f"Processing complete!")
         print()
+
+        # Index change summary — compare old vs new top N
+        new_top_n = store.get_top_scores(top_n)
+        new_top_set = {symbol for symbol, _ in new_top_n}
+        new_top_ranks = {symbol: rank for rank, (symbol, _) in enumerate(new_top_n, 1)}
+        new_top_scores = {symbol: score for symbol, score in new_top_n}
+
+        entered = new_top_set - old_top_set
+        exited = old_top_set - new_top_set
+        stayed = old_top_set & new_top_set
+
+        if old_top_set:  # Only show if there was a previous index
+            print(f"TOP {top_n} INDEX CHANGES")
+            print("=" * 60)
+
+            if entered:
+                print(f"\n  ENTERED ({len(entered)}):")
+                for symbol in sorted(entered, key=lambda s: new_top_ranks.get(s, 999)):
+                    rank = new_top_ranks[symbol]
+                    score = new_top_scores.get(symbol, 0)
+                    print(f"    + {symbol:<8} rank #{rank:<4} score {score:.1f}")
+
+            if exited:
+                print(f"\n  EXITED ({len(exited)}):")
+                # Get old scores for exited symbols
+                old_top_scores = {symbol: score for symbol, score in old_top_n}
+                for symbol in sorted(exited, key=lambda s: old_top_ranks.get(s, 999)):
+                    old_rank = old_top_ranks[symbol]
+                    old_score = old_top_scores.get(symbol, 0)
+                    print(f"    - {symbol:<8} was rank #{old_rank:<4} score {old_score:.1f}")
+
+            # Rank changes for symbols that stayed
+            rank_changes = []
+            for symbol in stayed:
+                old_rank = old_top_ranks[symbol]
+                new_rank = new_top_ranks[symbol]
+                if old_rank != new_rank:
+                    rank_changes.append((symbol, old_rank, new_rank))
+
+            if rank_changes:
+                rank_changes.sort(key=lambda x: x[1] - x[2], reverse=True)  # Biggest movers first
+                print(f"\n  RANK CHANGES ({len(rank_changes)} moved):")
+                for symbol, old_rank, new_rank in rank_changes[:20]:
+                    direction = "up" if new_rank < old_rank else "down"
+                    delta = abs(old_rank - new_rank)
+                    score = new_top_scores.get(symbol, 0)
+                    print(f"    {symbol:<8} #{old_rank} -> #{new_rank} ({direction} {delta}) score {score:.1f}")
+                if len(rank_changes) > 20:
+                    print(f"    ... and {len(rank_changes) - 20} more")
+
+            if not entered and not exited:
+                print(f"\n  No changes to the top {top_n} index.")
+
+            print("=" * 60)
+            print()
+
+            logger.info(
+                "fundamentals_job.index_changes",
+                top_n=top_n,
+                entered=sorted(entered),
+                exited=sorted(exited),
+                entered_count=len(entered),
+                exited_count=len(exited),
+                rank_changes_count=len(rank_changes),
+            )
+        else:
+            print(f"  (No previous top {top_n} index — first run)")
+            print()
 
         # Final summary
         end_time = datetime.now(timezone.utc)

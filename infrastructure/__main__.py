@@ -159,11 +159,11 @@ FINNHUB_ENV = k8s.core.v1.EnvVarArgs(
 PROFILES = {
     "tokenomics_v2_base": {
         "fundamentals_schedule": "0 2 * * 1",   # Monday 2AM UTC
-        "rebalancer_schedule": "0 15 * * 1",     # Monday 3PM UTC
+        "rebalancer_schedule": "0 15 1-7 * 1",  # First Monday of month, 3PM UTC
     },
     "tokenomics_v3_composite": {
         "fundamentals_schedule": "0 3 * * 1",   # Monday 3AM UTC (staggered)
-        "rebalancer_schedule": "0 16 * * 1",     # Monday 4PM UTC (staggered)
+        "rebalancer_schedule": "0 16 1-7 * 1",  # First Monday of month, 4PM UTC (staggered)
     },
 }
 
