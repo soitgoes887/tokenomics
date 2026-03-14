@@ -1058,6 +1058,45 @@ def main() -> int:
         print("Job completed successfully!")
         print("=" * 60)
 
+        # VIX Guard: optionally spawn an emergency rebalance Job
+        if (
+            profile.regime_config is not None
+            and profile.regime_config.vix_guard is not None
+            and profile.regime_config.vix_guard.enabled
+        ):
+            print()
+            print("Checking VIX guard...")
+            from tokenomics.risk.vix_guard import VixGuard
+            guard = VixGuard(profile_name=profile_name, config=profile.regime_config.vix_guard)
+            should_trigger, reason = guard.check()
+            guard.close()
+            print(f"  Result: {reason}")
+
+            if should_trigger:
+                print(f"  *** EMERGENCY REBALANCE TRIGGERED: {reason} ***")
+                logger.warning(
+                    "fundamentals_job.emergency_rebalance_triggered",
+                    profile=profile_name,
+                    reason=reason,
+                )
+                try:
+                    from tokenomics.risk.k8s_trigger import trigger_emergency_rebalance
+                    k8s_ns = os.getenv("K8S_NAMESPACE", "tokenomics")
+                    job_name = trigger_emergency_rebalance(profile_name, reason, namespace=k8s_ns)
+                    print(f"  Created emergency Job: {job_name}")
+                    logger.info(
+                        "fundamentals_job.emergency_job_created",
+                        job=job_name,
+                        namespace=k8s_ns,
+                    )
+                except Exception as e:
+                    # Non-fatal: log the failure but don't abort the refresh job
+                    print(f"  WARNING: Failed to create emergency Job: {e}")
+                    logger.error("fundamentals_job.emergency_job_failed", error=str(e))
+            else:
+                print(f"  No emergency rebalance needed.")
+            print()
+
         store.close()
         return 0
 

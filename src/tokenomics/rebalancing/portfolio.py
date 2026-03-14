@@ -156,3 +156,64 @@ def compute_target_weights(
         total_weight=sum(weights.values()),
         stock_count=len(weights),
     )
+
+
+def apply_regime_scaling(
+    target: TargetPortfolio,
+    cyclical_sectors: set[str],
+    default_scale: float,
+    cyclical_scale: float,
+    sectors: dict[str, str] | None = None,
+) -> TargetPortfolio:
+    """Re-weight portfolio based on risk-regime multipliers.
+
+    Cyclical-sector positions are scaled by `cyclical_scale`; everything else
+    by `default_scale`. Positions scaled to zero are dropped. Remaining weights
+    are re-normalised so the portfolio stays fully invested.
+
+    Args:
+        target: Target portfolio from compute_target_weights
+        cyclical_sectors: Sector names to treat as cyclical (e.g. "Industrials")
+        default_scale: Weight multiplier for non-cyclical positions [0, 1]
+        cyclical_scale: Weight multiplier for cyclical positions [0, 1]
+        sectors: symbol → Finnhub industry string; missing symbols treated as non-cyclical
+
+    Returns:
+        New TargetPortfolio with scaled and re-normalised weights
+    """
+    if default_scale >= 1.0 and cyclical_scale >= 1.0:
+        return target  # No-op in LOW regime
+
+    new_weights: dict[str, float] = {}
+    for symbol, weight in target.weights.items():
+        sector = (sectors or {}).get(symbol, "")
+        scale = cyclical_scale if sector in cyclical_sectors else default_scale
+        if scale > 0.0:
+            new_weights[symbol] = weight * scale
+
+    if not new_weights:
+        logger.warning(
+            "portfolio.regime_scaling_empty",
+            default_scale=default_scale,
+            cyclical_scale=cyclical_scale,
+        )
+        return TargetPortfolio(weights={}, total_weight=0.0, stock_count=0)
+
+    total = sum(new_weights.values())
+    normalized = {s: w / total for s, w in new_weights.items()}
+
+    dropped = len(target.weights) - len(normalized)
+    logger.info(
+        "portfolio.regime_scaling_applied",
+        before=len(target.weights),
+        after=len(normalized),
+        dropped=dropped,
+        default_scale=default_scale,
+        cyclical_scale=cyclical_scale,
+    )
+
+    return TargetPortfolio(
+        weights=normalized,
+        total_weight=sum(normalized.values()),
+        stock_count=len(normalized),
+    )

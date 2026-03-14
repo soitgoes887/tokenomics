@@ -1,6 +1,7 @@
 """Pulumi program to deploy tokenomics to Kubernetes."""
 
 import os
+from pathlib import Path
 
 import pulumi
 import pulumi_kubernetes as k8s
@@ -13,77 +14,33 @@ alpaca_api_key = config.require_secret("alpaca_api_key")
 alpaca_secret_key = config.require_secret("alpaca_secret_key")
 alpaca_api_key_v3 = config.require_secret("alpaca_api_key_v3")
 alpaca_secret_key_v3 = config.require_secret("alpaca_secret_key_v3")
+alpaca_api_key_v4 = config.require_secret("alpaca_api_key_v4")
+alpaca_secret_key_v4 = config.require_secret("alpaca_secret_key_v4")
 gemini_api_key = config.require_secret("gemini_api_key")
 finnhub_api_key = config.require_secret("finnhub_api_key")
 perplexity_api_key = config.require_secret("perplexity_api_key")
 marketaux_api_key = config.require_secret("marketaux_api_key")
 
-# Rebalancer settings - score-based portfolio rebalancing
-REBALANCER_SETTINGS = """\
-providers:
-  broker: alpaca-paper
+# Read settings from the canonical config file — single source of truth.
+# The rebalancer CronJob mounts this as /app/config/settings.yaml.
+REBALANCER_SETTINGS = (
+    Path(__file__).parent.parent / "config" / "settings.yaml"
+).read_text()
 
-strategy:
-  name: "score-rebalancer"
-  capital_usd: 100000
-  position_size_min_usd: 500
-  position_size_max_usd: 5000
-  max_open_positions: 100
-  target_new_positions_per_month: 100
+# ---------- Namespace ----------
 
-rebalancing:
-  top_n_stocks: 100
-  weighting: "score"
-  max_position_pct: 5.0
-  min_score: 50.0
-  rebalance_threshold_pct: 20.0
-  min_trade_usd: 100.0
-
-scoring_profiles:
-  tokenomics_v2_base:
-    scorer_class: "FundamentalsScorer"
-    redis_namespace: "fundamentals:v2_base"
-    alpaca_api_key_env: "ALPACA_API_KEY"
-    alpaca_secret_key_env: "ALPACA_SECRET_KEY"
-    description: "Original 3-factor scorer (ROE/Debt/Growth)"
-
-  tokenomics_v3_composite:
-    scorer_class: "CompositeScorer"
-    redis_namespace: "fundamentals:v3_composite"
-    alpaca_api_key_env: "ALPACA_API_KEY_V3"
-    alpaca_secret_key_env: "ALPACA_SECRET_KEY_V3"
-    description: "Extended composite scorer (placeholder)"
-
-  default_profile: "tokenomics_v2_base"
-
-trading:
-  paper: true
-  market_hours_only: true
-  order_type: "market"
-  time_in_force: "day"
-
-logging:
-  level: "INFO"
-  trade_log: "logs/trades.log"
-  decision_log: "logs/decisions.log"
-  app_log: "logs/tokenomics.log"
-  max_bytes: 10485760
-  backup_count: 5
-"""
-
-# Shared namespace
 namespace = k8s.core.v1.Namespace(
     "namespace",
     metadata=k8s.meta.v1.ObjectMetaArgs(name=namespace_name),
 )
 
-# Get Redis secret from redis namespace and copy to tokenomics namespace
+# ---------- Redis secret ----------
+
 redis_secret_data = k8s.core.v1.Secret.get(
     "redis-secret-ref",
     id="redis/redis-secret",
 )
 
-# Copy Redis secret to tokenomics namespace
 redis_secret_copy = k8s.core.v1.Secret(
     "redis-secret-copy",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -93,7 +50,8 @@ redis_secret_copy = k8s.core.v1.Secret(
     data=redis_secret_data.data,
 )
 
-# Shared secret (all profiles' Alpaca keys + shared API keys)
+# ---------- Shared secrets (all profiles' Alpaca keys + other APIs) ----------
+
 secret = k8s.core.v1.Secret(
     "tokenomics-secrets",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -105,6 +63,8 @@ secret = k8s.core.v1.Secret(
         "ALPACA_SECRET_KEY": alpaca_secret_key,
         "ALPACA_API_KEY_V3": alpaca_api_key_v3,
         "ALPACA_SECRET_KEY_V3": alpaca_secret_key_v3,
+        "ALPACA_API_KEY_V4": alpaca_api_key_v4,
+        "ALPACA_SECRET_KEY_V4": alpaca_secret_key_v4,
         "GEMINI_API_KEY": gemini_api_key,
         "FINNHUB_API_KEY": finnhub_api_key,
         "PERPLEXITY_API_KEY": perplexity_api_key,
@@ -112,7 +72,8 @@ secret = k8s.core.v1.Secret(
     },
 )
 
-# Rebalancer ConfigMap
+# ---------- Rebalancer ConfigMap (settings.yaml) ----------
+
 rebalancer_configmap = k8s.core.v1.ConfigMap(
     "rebalancer-config",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -122,23 +83,73 @@ rebalancer_configmap = k8s.core.v1.ConfigMap(
     data={"settings.yaml": REBALANCER_SETTINGS},
 )
 
-# Common Redis env vars shared by all CronJobs
+# ---------- RBAC — allow fundamentals-refresh pods to create emergency Jobs ----------
+#
+# The VIX guard in refresh_job.py calls k8s_trigger.trigger_emergency_rebalance(),
+# which reads the profile's rebalancer CronJob spec and creates a one-off Job.
+# This requires two permissions in the tokenomics namespace:
+#   - batch/v1 CronJobs: get   (to clone the job template)
+#   - batch/v1 Jobs:     create (to spawn the emergency job)
+
+fundamentals_sa = k8s.core.v1.ServiceAccount(
+    "fundamentals-refresh-sa",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="fundamentals-refresh-sa",
+        namespace=namespace.metadata.name,
+    ),
+)
+
+emergency_trigger_role = k8s.rbac.v1.Role(
+    "emergency-trigger-role",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="emergency-trigger-role",
+        namespace=namespace.metadata.name,
+    ),
+    rules=[
+        k8s.rbac.v1.PolicyRuleArgs(
+            api_groups=["batch"],
+            resources=["cronjobs"],
+            verbs=["get"],
+        ),
+        k8s.rbac.v1.PolicyRuleArgs(
+            api_groups=["batch"],
+            resources=["jobs"],
+            verbs=["create"],
+        ),
+    ],
+)
+
+emergency_trigger_binding = k8s.rbac.v1.RoleBinding(
+    "emergency-trigger-binding",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="emergency-trigger-binding",
+        namespace=namespace.metadata.name,
+    ),
+    role_ref=k8s.rbac.v1.RoleRefArgs(
+        api_group="rbac.authorization.k8s.io",
+        kind="Role",
+        name=emergency_trigger_role.metadata.name,
+    ),
+    subjects=[
+        k8s.rbac.v1.SubjectArgs(
+            kind="ServiceAccount",
+            name=fundamentals_sa.metadata.name,
+            namespace=namespace.metadata.name,
+        )
+    ],
+)
+
+# ---------- Shared env-var blocks ----------
+
 REDIS_ENV = [
-    k8s.core.v1.EnvVarArgs(
-        name="REDIS_HOST",
-        value="redis.redis.svc.cluster.local",
-    ),
-    k8s.core.v1.EnvVarArgs(
-        name="REDIS_PORT",
-        value="6379",
-    ),
+    k8s.core.v1.EnvVarArgs(name="REDIS_HOST", value="redis.redis.svc.cluster.local"),
+    k8s.core.v1.EnvVarArgs(name="REDIS_PORT", value="6379"),
     k8s.core.v1.EnvVarArgs(
         name="REDIS_PASSWORD",
         value_from=k8s.core.v1.EnvVarSourceArgs(
             secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
-                name="redis-secret",
-                key="redis-password",
-            ),
+                name="redis-secret", key="redis-password"
+            )
         ),
     ),
 ]
@@ -147,15 +158,21 @@ FINNHUB_ENV = k8s.core.v1.EnvVarArgs(
     name="FINNHUB_API_KEY",
     value_from=k8s.core.v1.EnvVarSourceArgs(
         secret_key_ref=k8s.core.v1.SecretKeySelectorArgs(
-            name="tokenomics-secrets",
-            key="FINNHUB_API_KEY",
-        ),
+            name="tokenomics-secrets", key="FINNHUB_API_KEY"
+        )
     ),
 )
 
-# ---------- Per-profile CronJobs ----------
+# Downward API: let pods know their own namespace so k8s_trigger uses the right one
+K8S_NAMESPACE_ENV = k8s.core.v1.EnvVarArgs(
+    name="K8S_NAMESPACE",
+    value_from=k8s.core.v1.EnvVarSourceArgs(
+        field_ref=k8s.core.v1.ObjectFieldSelectorArgs(field_path="metadata.namespace")
+    ),
+)
 
-# Scoring profiles and their schedules
+# ---------- Per-profile CronJob schedules ----------
+
 PROFILES = {
     "tokenomics_v2_base": {
         "fundamentals_schedule": "0 2 * * 1",   # Monday 2AM UTC
@@ -163,13 +180,21 @@ PROFILES = {
     },
     "tokenomics_v3_composite": {
         "fundamentals_schedule": "0 3 * * 1",   # Monday 3AM UTC (staggered)
-        "rebalancer_schedule": "0 16 1-7 * 1",  # First Monday of month, 4PM UTC (staggered)
+        "rebalancer_schedule": "0 16 1-7 * 1",  # First Monday of month, 4PM UTC
+    },
+    "tokenomics_v4_regime": {
+        "fundamentals_schedule": "0 4 * * 1",   # Monday 4AM UTC (staggered)
+        "rebalancer_schedule": "0 17 1-7 * 1",  # First Monday of month, 5PM UTC
     },
 }
 
 
 def make_fundamentals_cronjob(profile_name: str, schedule: str):
-    """Create a fundamentals-refresh CronJob for a specific scoring profile."""
+    """Create a fundamentals-refresh CronJob for a scoring profile.
+
+    The pod runs with fundamentals-refresh-sa so it can call the Kubernetes
+    API to create emergency rebalancer Jobs when the VIX guard fires.
+    """
     resource_name = f"fundamentals-refresh-{profile_name.replace('_', '-')}"
     return k8s.batch.v1.CronJob(
         resource_name,
@@ -196,6 +221,7 @@ def make_fundamentals_cronjob(profile_name: str, schedule: str):
                         ),
                         spec=k8s.core.v1.PodSpecArgs(
                             restart_policy="OnFailure",
+                            service_account_name=fundamentals_sa.metadata.name,
                             containers=[
                                 k8s.core.v1.ContainerArgs(
                                     name="fundamentals-refresh",
@@ -204,6 +230,7 @@ def make_fundamentals_cronjob(profile_name: str, schedule: str):
                                     env=[
                                         *REDIS_ENV,
                                         FINNHUB_ENV,
+                                        K8S_NAMESPACE_ENV,
                                         k8s.core.v1.EnvVarArgs(
                                             name="SCORING_PROFILE",
                                             value=profile_name,
@@ -239,7 +266,7 @@ def make_fundamentals_cronjob(profile_name: str, schedule: str):
 
 
 def make_rebalancer_cronjob(profile_name: str, schedule: str):
-    """Create a rebalancer CronJob for a specific scoring profile."""
+    """Create a rebalancer CronJob for a scoring profile."""
     resource_name = f"rebalancer-{profile_name.replace('_', '-')}"
     return k8s.batch.v1.CronJob(
         resource_name,
@@ -321,7 +348,8 @@ def make_rebalancer_cronjob(profile_name: str, schedule: str):
     )
 
 
-# Create per-profile CronJobs
+# ---------- Per-profile CronJobs ----------
+
 fundamentals_cronjobs = {}
 rebalancer_cronjobs = {}
 
@@ -333,8 +361,8 @@ for profile_name, schedules in PROFILES.items():
         profile_name, schedules["rebalancer_schedule"]
     )
 
-# Universe refresh CronJob - runs monthly to update stock universe by market cap
-# This job is SHARED across all profiles (universe is not namespaced)
+# ---------- Universe refresh CronJob (shared, monthly) ----------
+
 universe_cronjob = k8s.batch.v1.CronJob(
     "universe-refresh",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -342,17 +370,14 @@ universe_cronjob = k8s.batch.v1.CronJob(
         namespace=namespace.metadata.name,
     ),
     spec=k8s.batch.v1.CronJobSpecArgs(
-        # Run on the 1st of each month at 1:00 AM UTC
-        schedule="0 1 1 * *",
+        schedule="0 1 1 * *",  # 1st of each month, 1AM UTC
         concurrency_policy="Forbid",
         successful_jobs_history_limit=2,
         failed_jobs_history_limit=2,
         job_template=k8s.batch.v1.JobTemplateSpecArgs(
             spec=k8s.batch.v1.JobSpecArgs(
-                # Long TTL - job can take several hours
-                ttl_seconds_after_finished=172800,  # Clean up after 48 hours
+                ttl_seconds_after_finished=172800,  # 48h cleanup
                 backoff_limit=2,
-                # No deadline - job may take 5+ hours for 17k symbols
                 template=k8s.core.v1.PodTemplateSpecArgs(
                     metadata=k8s.meta.v1.ObjectMetaArgs(
                         labels={"app": "tokenomics", "component": "universe-refresh"},
@@ -367,14 +392,9 @@ universe_cronjob = k8s.batch.v1.CronJob(
                                 env=[
                                     *REDIS_ENV,
                                     FINNHUB_ENV,
-                                    # Configuration - how many top companies to track
-                                    k8s.core.v1.EnvVarArgs(
-                                        name="UNIVERSE_SIZE",
-                                        value="1500",
-                                    ),
+                                    k8s.core.v1.EnvVarArgs(name="UNIVERSE_SIZE", value="1500"),
                                 ],
                                 resources=k8s.core.v1.ResourceRequirementsArgs(
-                                    # Higher limits - this job runs longer
                                     requests={"cpu": "100m", "memory": "256Mi"},
                                     limits={"cpu": "500m", "memory": "512Mi"},
                                 ),
@@ -387,8 +407,65 @@ universe_cronjob = k8s.batch.v1.CronJob(
     ),
 )
 
+# ---------- Regime job CronJob (shared, daily) ----------
+# Computes CGRS-lite (VIX + Finnhub sentiment) and writes risk regime to Redis.
+# Must run before the rebalancer so the regime is fresh when positions are sized.
+
+regime_job_cronjob = k8s.batch.v1.CronJob(
+    "regime-job",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="regime-job",
+        namespace=namespace.metadata.name,
+    ),
+    spec=k8s.batch.v1.CronJobSpecArgs(
+        schedule="0 6 * * *",  # 6AM UTC daily — well before US market open (14:30 UTC)
+        concurrency_policy="Forbid",
+        successful_jobs_history_limit=3,
+        failed_jobs_history_limit=3,
+        job_template=k8s.batch.v1.JobTemplateSpecArgs(
+            spec=k8s.batch.v1.JobSpecArgs(
+                ttl_seconds_after_finished=86400,
+                backoff_limit=2,
+                template=k8s.core.v1.PodTemplateSpecArgs(
+                    metadata=k8s.meta.v1.ObjectMetaArgs(
+                        labels={"app": "tokenomics", "component": "regime-job"},
+                    ),
+                    spec=k8s.core.v1.PodSpecArgs(
+                        restart_policy="OnFailure",
+                        containers=[
+                            k8s.core.v1.ContainerArgs(
+                                name="regime-job",
+                                image=image,
+                                command=["python", "-m", "tokenomics.risk.regime_job"],
+                                env=[
+                                    *REDIS_ENV,
+                                    FINNHUB_ENV,
+                                ],
+                                env_from=[
+                                    k8s.core.v1.EnvFromSourceArgs(
+                                        secret_ref=k8s.core.v1.SecretEnvSourceArgs(
+                                            name=secret.metadata.name,
+                                        ),
+                                    ),
+                                ],
+                                resources=k8s.core.v1.ResourceRequirementsArgs(
+                                    requests={"cpu": "50m", "memory": "128Mi"},
+                                    limits={"cpu": "200m", "memory": "256Mi"},
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+
+# ---------- Exports ----------
+
 pulumi.export("namespace", namespace.metadata.name)
 pulumi.export("universe-cronjob", universe_cronjob.metadata.name)
+pulumi.export("regime-job-cronjob", regime_job_cronjob.metadata.name)
 for profile_name in PROFILES:
     safe_name = profile_name.replace("_", "-")
     pulumi.export(f"fundamentals-cronjob-{safe_name}", fundamentals_cronjobs[profile_name].metadata.name)

@@ -50,6 +50,45 @@ scoring_profiles:
       speculative_value: 30.0           # ... Value_sec < 30 → exclude
       deduplicate_share_classes: true    # Keep only one share class per issuer
 
+  tokenomics_v4_regime:
+    scorer_class: "CompositeScorer"
+    redis_namespace: "fundamentals:v4_regime"
+    alpaca_api_key_env: "ALPACA_API_KEY_V4"
+    alpaca_secret_key_env: "ALPACA_SECRET_KEY_V4"
+    description: "4-factor composite + daily CGRS-lite geopolitical risk regime"
+    exclusion_list: "config/exclusions/v4-exclusion-list.txt"
+    scorer_kwargs:
+      value_weight: 0.30
+      quality_weight: 0.35
+      momentum_weight: 0.25
+      lowvol_weight: 0.10
+    post_filters:
+      min_quality: 50.0
+      speculative_lowvol: 10.0
+      speculative_value: 30.0
+      deduplicate_share_classes: true
+    regime_config:
+      regime_namespace: "risk:regime"
+      cyclical_sectors:
+        - "Consumer Cyclicals"
+        - "Industrials"
+        - "Basic Materials"
+        - "Energy"
+      size_factors:
+        LOW:      {default: 1.00, cyclical: 1.00}  # Full allocation
+        MODERATE: {default: 1.00, cyclical: 0.75}  # 25% cut on cyclicals
+        HIGH:     {default: 0.80, cyclical: 0.50}  # Light trim + 50% cyclical cut
+        EXTREME:  {default: 0.60, cyclical: 0.00}  # Drop all cyclicals, 40% trim on defensives
+      stale_regime_fallback: "MODERATE"
+      max_regime_age_hours: 30
+      vix_guard:
+        enabled: true
+        vix_panic_threshold: 45.0    # VIX >= 45 → trigger unconditionally
+        vix_elevated_threshold: 35.0 # VIX >= 35 AND spike >= 10pts in 3 days → trigger
+        vix_spike_points: 10.0
+        vix_spike_days: 3
+        cooldown_days: 15            # Max 1 emergency rebalance per 15 days
+
   default_profile: "tokenomics_v2_base"
 
 trading:

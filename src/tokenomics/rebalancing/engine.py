@@ -7,8 +7,9 @@ import structlog
 
 from tokenomics.config import AppConfig, ProfileSecrets, Secrets, resolve_profile
 from tokenomics.fundamentals.store import FundamentalsStore
-from tokenomics.rebalancing.portfolio import compute_target_weights
+from tokenomics.rebalancing.portfolio import apply_regime_scaling, compute_target_weights
 from tokenomics.rebalancing.trader import generate_trades, TradeSide
+from tokenomics.risk.regime import RegimeStore, RiskRegime
 from tokenomics.trading.broker import AlpacaBrokerProvider
 
 logger = structlog.get_logger(__name__)
@@ -111,6 +112,51 @@ class RebalancingEngine:
             print(f"  Target: {target.stock_count} stocks")
             print(f"  Total weight: {target.total_weight:.4f}")
             print()
+
+            # Step 2b: Apply regime-aware position sizing (V4 profiles only)
+            if self._profile.regime_config:
+                regime_cfg = self._profile.regime_config
+                regime_store = RegimeStore(namespace=regime_cfg.regime_namespace)
+
+                if regime_store.is_stale(max_age_hours=regime_cfg.max_regime_age_hours):
+                    regime = RiskRegime(regime_cfg.stale_regime_fallback)
+                    print(f"  Regime: WARNING — stale/missing data, using fallback {regime.value}")
+                    logger.warning("rebalancer.regime_stale", fallback=regime.value)
+                else:
+                    snap = regime_store.load()
+                    regime = snap.regime
+                    vix_str = f"{snap.vix:.1f}" if snap.vix >= 0 else "N/A"
+                    print(
+                        f"  Regime: {regime.value}"
+                        f"  (VIX={vix_str}, sentiment={snap.sentiment:+.3f}, CGRS={snap.cgrs:.1f})"
+                    )
+                    logger.info(
+                        "rebalancer.regime_loaded",
+                        regime=regime.value,
+                        cgrs=snap.cgrs,
+                        vix=snap.vix,
+                        date=snap.date,
+                    )
+                regime_store.close()
+
+                factors = regime_cfg.size_factors.get(regime.value)
+                if factors:
+                    target = apply_regime_scaling(
+                        target=target,
+                        cyclical_sectors=set(regime_cfg.cyclical_sectors),
+                        default_scale=factors.default,
+                        cyclical_scale=factors.cyclical,
+                        sectors=sectors if sectors else None,
+                    )
+                    print(
+                        f"  After regime scaling: {target.stock_count} stocks"
+                        f"  (default={factors.default:.0%}, cyclical={factors.cyclical:.0%})"
+                    )
+                    if target.stock_count == 0:
+                        print("ERROR: Regime scaling removed all positions!")
+                        logger.error("rebalancer.regime_scaling_empty")
+                        return 1
+                print()
 
             # Step 3: Get current holdings from Alpaca
             print("Getting current holdings from Alpaca...")

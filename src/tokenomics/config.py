@@ -89,6 +89,73 @@ class PostFiltersConfig(BaseModel):
     )
 
 
+class RegimeSizeFactors(BaseModel):
+    """Position size multipliers for a single risk regime level."""
+
+    default: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="Weight multiplier for non-cyclical positions",
+    )
+    cyclical: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="Weight multiplier for cyclical-sector positions",
+    )
+
+
+class VixGuardConfig(BaseModel):
+    """Configuration for the VIX-based emergency rebalance trigger.
+
+    Two firing conditions (both subject to cooldown):
+      1. Panic override:    VIX >= vix_panic_threshold  (fires unconditionally)
+      2. Elevated + spike:  VIX >= vix_elevated_threshold
+                            AND VIX rose >= vix_spike_points in vix_spike_days sessions
+    """
+
+    enabled: bool = False
+    vix_panic_threshold: float = Field(
+        default=45.0, gt=0,
+        description="Absolute panic: VIX >= this triggers regardless of spike",
+    )
+    vix_elevated_threshold: float = Field(
+        default=35.0, gt=0,
+        description="Elevated baseline; needs spike condition to complete trigger",
+    )
+    vix_spike_points: float = Field(
+        default=10.0, gt=0,
+        description="VIX rise in vix_spike_days sessions that completes the elevated trigger",
+    )
+    vix_spike_days: int = Field(
+        default=3, ge=1,
+        description="Lookback window (trading sessions) for spike calculation",
+    )
+    cooldown_days: int = Field(
+        default=15, ge=1,
+        description="Minimum days between emergency rebalances for this profile",
+    )
+
+
+class RegimeConfig(BaseModel):
+    """Regime-aware position sizing wired into the rebalancing engine.
+
+    The rebalancer reads the daily CGRS-lite regime from Redis and scales
+    down (or drops) cyclical-sector positions accordingly.
+    """
+
+    regime_namespace: str = "risk:regime"
+    cyclical_sectors: list[str] = Field(default_factory=list)
+    # Keys must match RiskRegime values: LOW, MODERATE, HIGH, EXTREME
+    size_factors: dict[str, RegimeSizeFactors] = Field(default_factory=dict)
+    stale_regime_fallback: str = Field(
+        default="MODERATE",
+        description="Regime to assume when Redis data is missing or stale",
+    )
+    max_regime_age_hours: int = Field(
+        default=30,
+        description="Hours before regime data is considered stale",
+    )
+    vix_guard: Optional[VixGuardConfig] = None
+
+
 class ScoringProfileConfig(BaseModel):
     """Configuration for a single scoring profile."""
 
@@ -100,6 +167,7 @@ class ScoringProfileConfig(BaseModel):
     scorer_kwargs: dict[str, float] = Field(default_factory=dict)
     exclusion_list: Optional[str] = None
     post_filters: PostFiltersConfig = Field(default_factory=PostFiltersConfig)
+    regime_config: Optional[RegimeConfig] = None
 
 
 class ScoringProfilesConfig(BaseModel):

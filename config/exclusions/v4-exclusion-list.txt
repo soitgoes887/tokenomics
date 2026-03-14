@@ -1,0 +1,2 @@
+# V4 exclusion list — one symbol per line, lines starting with # are ignored
+# Add symbols to exclude from the V4 scoring universe here
