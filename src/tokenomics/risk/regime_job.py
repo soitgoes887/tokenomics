@@ -83,10 +83,15 @@ def fetch_vix(tickers: list[str]) -> tuple[float, str]:
     Tries each ticker in order and returns the first successful reading.
     Returns (nan, "unavailable") if all tickers fail.
     """
+    import pandas as pd
+
     for ticker in tickers:
         try:
             hist = yf.download(ticker, period="5d", interval="1d", progress=False, auto_adjust=True)
             if not hist.empty:
+                # yfinance ≥0.2.54 returns MultiIndex columns even for single tickers
+                if isinstance(hist.columns, pd.MultiIndex):
+                    hist.columns = hist.columns.get_level_values(0)
                 val = float(hist["Close"].iloc[-1])
                 logger.info("regime_job.vix_fetched", ticker=ticker, vix=round(val, 2))
                 return val, ticker
@@ -96,15 +101,70 @@ def fetch_vix(tickers: list[str]) -> tuple[float, str]:
     return float("nan"), "unavailable"
 
 
+_BULLISH_WORDS = {
+    "rally", "surge", "soar", "gain", "rise", "bull", "bullish", "upbeat",
+    "beat", "outperform", "upgrade", "recovery", "optimism", "growth",
+    "strong", "boom", "rebound", "profit", "record", "high",
+}
+_BEARISH_WORDS = {
+    "fall", "drop", "plunge", "decline", "bear", "bearish", "sell-off",
+    "selloff", "miss", "underperform", "downgrade", "recession", "fear",
+    "weak", "crash", "loss", "risk", "uncertainty", "inflation", "tariff",
+}
+
+
+def _fetch_general_news_sentiment(client: finnhub.Client) -> float:
+    """Free-tier fallback: keyword-count sentiment from Finnhub general news.
+
+    Returns a score in [-1, +1]: positive = bullish, negative = bearish.
+    Returns 0.0 (neutral) if no articles are available.
+    """
+    try:
+        articles = client.general_news(category="general") or []
+    except Exception as e:
+        logger.warning("regime_job.general_news_error", error=str(e))
+        return 0.0
+
+    bull_count = 0
+    bear_count = 0
+    for article in articles:
+        text = (
+            (article.get("headline") or "") + " " + (article.get("summary") or "")
+        ).lower()
+        words = set(text.split())
+        bull_count += len(words & _BULLISH_WORDS)
+        bear_count += len(words & _BEARISH_WORDS)
+
+    total = bull_count + bear_count
+    if total == 0:
+        logger.info("regime_job.general_news_no_keywords", articles=len(articles))
+        return 0.0
+
+    score = (bull_count - bear_count) / total
+    logger.info(
+        "regime_job.general_news_sentiment",
+        articles=len(articles),
+        bullish_hits=bull_count,
+        bearish_hits=bear_count,
+        score=round(score, 4),
+    )
+    return score
+
+
 def fetch_sentiment(client: finnhub.Client, symbols: list[str]) -> float:
     """Average market sentiment over proxy symbols via Finnhub news_sentiment.
 
     Finnhub returns bullishPercent / bearishPercent under the 'sentiment' key.
     Score = bullishPercent - bearishPercent, range [-1, +1].
 
+    Falls back to general_news keyword counting if news_sentiment returns 403
+    (premium-only endpoint not available on free tier).
+
     Returns 0.0 (neutral) if no data is available.
     """
     scores: list[float] = []
+    premium_blocked = False
+
     for symbol in symbols:
         try:
             resp = client.news_sentiment(symbol)
@@ -122,15 +182,27 @@ def fetch_sentiment(client: finnhub.Client, symbols: list[str]) -> float:
                     score=round(score, 3),
                 )
         except Exception as e:
-            logger.warning("regime_job.sentiment_fetch_error", symbol=symbol, error=str(e))
+            err_str = str(e)
+            logger.warning("regime_job.sentiment_fetch_error", symbol=symbol, error=err_str)
+            if "403" in err_str and not premium_blocked:
+                premium_blocked = True
+                logger.warning(
+                    "regime_job.sentiment_premium_blocked",
+                    msg="news_sentiment is premium-only — switching to general_news fallback",
+                )
+                break  # no point trying remaining symbols
 
-    if not scores:
-        logger.warning("regime_job.sentiment_unavailable", fallback=0.0)
-        return 0.0
+    if scores:
+        avg = sum(scores) / len(scores)
+        logger.info("regime_job.sentiment_averaged", symbols_scored=len(scores), avg=round(avg, 4))
+        return avg
 
-    avg = sum(scores) / len(scores)
-    logger.info("regime_job.sentiment_averaged", symbols_scored=len(scores), avg=round(avg, 4))
-    return avg
+    if premium_blocked:
+        score = _fetch_general_news_sentiment(client)
+        return score
+
+    logger.warning("regime_job.sentiment_unavailable", fallback=0.0)
+    return 0.0
 
 
 def compute_cgrs(vix: float, sentiment: float) -> float:

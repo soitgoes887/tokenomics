@@ -15,6 +15,7 @@ of the daily regime-job schedule.
 import os
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import redis
 import structlog
 import yfinance as yf
@@ -81,6 +82,9 @@ class VixGuard:
             )
             if hist.empty:
                 return []
+            # yfinance ≥0.2.54 returns MultiIndex columns even for single tickers
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
             closes = [float(v) for v in hist["Close"].dropna().tolist()]
             return closes[-(needed):] if len(closes) >= needed else closes
         except Exception as e:

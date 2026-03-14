@@ -461,11 +461,79 @@ regime_job_cronjob = k8s.batch.v1.CronJob(
     ),
 )
 
+# ---------- Backtest CronJob (weekly, Sundays 2AM UTC) ----------
+# Loads current scores from Redis for each profile, fetches historical OHLCV
+# from Alpaca, and runs backtesting.py per-symbol.  Results are printed to
+# stdout (kubectl logs) and saved as JSON to Redis with a 30-day TTL.
+# Run on-demand: kubectl create job --from=cronjob/backtest backtest-manual -n tokenomics
+
+backtest_cronjob = k8s.batch.v1.CronJob(
+    "backtest",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="backtest",
+        namespace=namespace.metadata.name,
+    ),
+    spec=k8s.batch.v1.CronJobSpecArgs(
+        schedule="0 2 * * 0",  # Sunday 2AM UTC — after all weekly Monday jobs
+        concurrency_policy="Forbid",
+        successful_jobs_history_limit=3,
+        failed_jobs_history_limit=3,
+        job_template=k8s.batch.v1.JobTemplateSpecArgs(
+            spec=k8s.batch.v1.JobSpecArgs(
+                ttl_seconds_after_finished=172800,  # 48h — backtest logs are valuable
+                backoff_limit=1,
+                template=k8s.core.v1.PodTemplateSpecArgs(
+                    metadata=k8s.meta.v1.ObjectMetaArgs(
+                        labels={"app": "tokenomics", "component": "backtest"},
+                    ),
+                    spec=k8s.core.v1.PodSpecArgs(
+                        restart_policy="OnFailure",
+                        containers=[
+                            k8s.core.v1.ContainerArgs(
+                                name="backtest",
+                                image=image,
+                                command=["python", "-m", "tokenomics.backtesting.backtest_job"],
+                                env=[
+                                    *REDIS_ENV,
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="BACKTEST_PROFILES",
+                                        value="tokenomics_v2_base,tokenomics_v3_composite,tokenomics_v4_regime",
+                                    ),
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="BACKTEST_TOP_N",
+                                        value="100",
+                                    ),
+                                    k8s.core.v1.EnvVarArgs(
+                                        name="BACKTEST_SYMBOLS_LIMIT",
+                                        value="50",
+                                    ),
+                                ],
+                                env_from=[
+                                    k8s.core.v1.EnvFromSourceArgs(
+                                        secret_ref=k8s.core.v1.SecretEnvSourceArgs(
+                                            name=secret.metadata.name,
+                                        ),
+                                    ),
+                                ],
+                                resources=k8s.core.v1.ResourceRequirementsArgs(
+                                    requests={"cpu": "200m", "memory": "512Mi"},
+                                    limits={"cpu": "1000m", "memory": "1Gi"},
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+
 # ---------- Exports ----------
 
 pulumi.export("namespace", namespace.metadata.name)
 pulumi.export("universe-cronjob", universe_cronjob.metadata.name)
 pulumi.export("regime-job-cronjob", regime_job_cronjob.metadata.name)
+pulumi.export("backtest-cronjob", backtest_cronjob.metadata.name)
 for profile_name in PROFILES:
     safe_name = profile_name.replace("_", "-")
     pulumi.export(f"fundamentals-cronjob-{safe_name}", fundamentals_cronjobs[profile_name].metadata.name)
