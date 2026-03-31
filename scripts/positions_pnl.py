@@ -41,6 +41,12 @@ PROFILES = {
         "secret_key_env": "ALPACA_SECRET_KEY_V3",
         "state_file": ROOT / "data" / "state.json",
     },
+    "v4": {
+        "label": "V4 Regime",
+        "api_key_env": "ALPACA_API_KEY_V4",
+        "secret_key_env": "ALPACA_SECRET_KEY_V4",
+        "state_file": ROOT / "data" / "state.json",
+    },
 }
 
 FIELDNAMES = [

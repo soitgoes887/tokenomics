@@ -20,6 +20,7 @@ gemini_api_key = config.require_secret("gemini_api_key")
 finnhub_api_key = config.require_secret("finnhub_api_key")
 perplexity_api_key = config.require_secret("perplexity_api_key")
 marketaux_api_key = config.require_secret("marketaux_api_key")
+discord_webhook_url = config.require_secret("discord_webhook_url")
 
 # Read settings from the canonical config file — single source of truth.
 # The rebalancer CronJob mounts this as /app/config/settings.yaml.
@@ -69,6 +70,7 @@ secret = k8s.core.v1.Secret(
         "FINNHUB_API_KEY": finnhub_api_key,
         "PERPLEXITY_API_KEY": perplexity_api_key,
         "MARKETAUX_API_KEY": marketaux_api_key,
+        "DISCORD_WEBHOOK_URL": discord_webhook_url,
     },
 )
 
@@ -528,12 +530,64 @@ backtest_cronjob = k8s.batch.v1.CronJob(
     ),
 )
 
+# ---------- Discord update CronJob (weekly, Fridays 9PM UTC / 5PM ET) ----------
+# Fetches portfolio performance for all profiles, generates comparison charts,
+# and posts a formatted update with PNGs to Discord via webhook.
+# Run on-demand: kubectl create job --from=cronjob/discord-update discord-update-manual -n tokenomics
+
+discord_update_cronjob = k8s.batch.v1.CronJob(
+    "discord-update",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="discord-update",
+        namespace=namespace.metadata.name,
+    ),
+    spec=k8s.batch.v1.CronJobSpecArgs(
+        schedule="0 21 * * 5",  # Friday 9PM UTC (5PM ET, after market close)
+        concurrency_policy="Forbid",
+        successful_jobs_history_limit=3,
+        failed_jobs_history_limit=3,
+        job_template=k8s.batch.v1.JobTemplateSpecArgs(
+            spec=k8s.batch.v1.JobSpecArgs(
+                ttl_seconds_after_finished=86400,
+                backoff_limit=2,
+                template=k8s.core.v1.PodTemplateSpecArgs(
+                    metadata=k8s.meta.v1.ObjectMetaArgs(
+                        labels={"app": "tokenomics", "component": "discord-update"},
+                    ),
+                    spec=k8s.core.v1.PodSpecArgs(
+                        restart_policy="OnFailure",
+                        containers=[
+                            k8s.core.v1.ContainerArgs(
+                                name="discord-update",
+                                image=image,
+                                command=["python", "scripts/discord_update.py"],
+                                env_from=[
+                                    k8s.core.v1.EnvFromSourceArgs(
+                                        secret_ref=k8s.core.v1.SecretEnvSourceArgs(
+                                            name=secret.metadata.name,
+                                        ),
+                                    ),
+                                ],
+                                resources=k8s.core.v1.ResourceRequirementsArgs(
+                                    requests={"cpu": "100m", "memory": "256Mi"},
+                                    limits={"cpu": "500m", "memory": "512Mi"},
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+
 # ---------- Exports ----------
 
 pulumi.export("namespace", namespace.metadata.name)
 pulumi.export("universe-cronjob", universe_cronjob.metadata.name)
 pulumi.export("regime-job-cronjob", regime_job_cronjob.metadata.name)
 pulumi.export("backtest-cronjob", backtest_cronjob.metadata.name)
+pulumi.export("discord-update-cronjob", discord_update_cronjob.metadata.name)
 for profile_name in PROFILES:
     safe_name = profile_name.replace("_", "-")
     pulumi.export(f"fundamentals-cronjob-{safe_name}", fundamentals_cronjobs[profile_name].metadata.name)

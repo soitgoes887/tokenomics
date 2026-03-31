@@ -43,6 +43,13 @@ PROFILES = {
         "start": date(2026, 2, 22),
         "color": "#2ca02c",
     },
+    "v4": {
+        "label": "Tokenomics V4 Regime",
+        "api_key_env": "ALPACA_API_KEY_V4",
+        "secret_key_env": "ALPACA_SECRET_KEY_V4",
+        "start": date(2026, 3, 14),
+        "color": "#d62728",
+    },
 }
 
 if len(sys.argv) < 2 or sys.argv[1] not in PROFILES:
@@ -153,9 +160,14 @@ sp_pct = (aligned["sp500"] / aligned["sp500"].iloc[0] - 1) * 100
 
 portfolio_growth = portfolio_pct.iloc[-1]
 sp_growth = sp_pct.iloc[-1]
+portfolio_current_value = aligned["portfolio"].iloc[-1]
+portfolio_start_value = aligned["portfolio"].iloc[0]
+sp_equivalent_value = portfolio_start_value * (1 + sp_growth / 100)
 
 print(f"{label} growth: {portfolio_growth:+.2f}%")
 print(f"S&P 500 (SPY) growth:      {sp_growth:+.2f}%")
+print(f"Portfolio value:           ${portfolio_current_value:,.2f} (started at ${portfolio_start_value:,.2f})")
+print(f"S&P 500 equivalent:        ${sp_equivalent_value:,.2f} (if ${portfolio_start_value:,.0f} bought SPY on day 1)")
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +191,8 @@ ax.set_xticklabels(labels, rotation=45, ha="right")
 
 ax.set_title(
     f"{label} vs S&P 500 — {start.strftime('%b %d')} onwards\n"
-    f"{label}: {portfolio_growth:+.2f}%  |  S&P 500: {sp_growth:+.2f}%",
+    f"{label}: {portfolio_growth:+.2f}% (\\${portfolio_current_value:,.0f})  |  "
+    f"S&P 500: {sp_growth:+.2f}% (\\${sp_equivalent_value:,.0f})",
     fontsize=13,
 )
 ax.set_ylabel("Return (%)", fontsize=11)
