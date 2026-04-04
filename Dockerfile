@@ -15,6 +15,7 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY src/ src/
 COPY config/ config/
+COPY scripts/ scripts/
 
 RUN mkdir -p data logs && chown -R appuser:appuser /app
 
