@@ -14,6 +14,7 @@ config:
 
 
 
+
       {"news": "alpaca", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
       {"news": "finnhub", "llm": "perplexity-sonar", "broker": "alpaca-paper"},
       {"news": "marketaux", "llm": "perplexity-sonar", "broker": "alpaca-paper"}
@@ -39,3 +40,5 @@ config:
     secure: AAABAP9yARcfJVnifv44f95AhaMtgUIoQW8NTPwQDoKRvWnwafbnjMm6I6gx4cn0VQMeAgSabwaW0g==
   tokenomics:alpaca_secret_key_v4:
     secure: AAABADP1g85E8/Bf3ZjPdd9yzoGZt2EFvi25u6rF7CVmc9MT4VPV7ZuvCoyIjgJT8NZE73TXCKkBGJRY8tRUdBNvOyWNxZ+4yyB+jQ==
+  tokenomics:discord_webhook_url:
+    secure: AAABAGSR5DtBcCEQDmYLTwOypnn9Dkd3JSkdOmKLqf1gYSo9deJvJ0K+VdeJw90VcPGBgLBp/vdGAlNtTsgcrXegzTmwv5+3T4tg8PL2lXKuxqk3KdJziEz7LEtvx+yIMrib5VoH3wqYiP5NoRv17GV2eYqw93GqcchTnQg2p811QV6PTBipDSAVog8FuRBALtq7xxUw8VvY
