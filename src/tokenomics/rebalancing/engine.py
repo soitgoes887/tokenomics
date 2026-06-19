@@ -40,6 +40,10 @@ class RebalancingEngine:
         self._broker = AlpacaBrokerProvider(config, secrets, **broker_kwargs)
         self._store = FundamentalsStore(namespace=self._profile.redis_namespace)
 
+        # Per-profile rebalancing override (e.g. equal-weight for Magic Formula
+        # profiles), falling back to the global rebalancing block.
+        self._rebal_config = self._profile.rebalancing or config.rebalancing
+
     def run(self) -> int:
         """Run the rebalancing process.
 
@@ -70,7 +74,7 @@ class RebalancingEngine:
             # Step 1: Load scores from Redis
             print("Loading fundamental scores from Redis...")
             # Load more scores than needed to allow for filtering by min_score
-            scores = self._store.get_top_scores(limit=self._config.rebalancing.top_n_stocks * 2)
+            scores = self._store.get_top_scores(limit=self._rebal_config.top_n_stocks * 2)
 
             if not scores:
                 print("ERROR: No scores found in Redis!")
@@ -85,7 +89,7 @@ class RebalancingEngine:
 
             # Step 2: Compute target weights
             print("Computing target portfolio weights...")
-            rebal_config = self._config.rebalancing
+            rebal_config = self._rebal_config
 
             # Load sector data for sector caps
             sectors = self._store.get_sectors()
