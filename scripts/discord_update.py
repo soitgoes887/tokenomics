@@ -62,6 +62,22 @@ PROFILES = {
         "start": date(2026, 3, 14),
         "color": "#d62728",
     },
+    "v5": {
+        "label": "Tokenomics V5 Magic 100M",
+        "short_label": "V5 Magic 100M",
+        "api_key_env": "ALPACA_API_KEY_V5",
+        "secret_key_env": "ALPACA_SECRET_KEY_V5",
+        "start": date(2026, 6, 19),
+        "color": "#9467bd",
+    },
+    "v6": {
+        "label": "Tokenomics V6 Magic 1B",
+        "short_label": "V6 Magic 1B",
+        "api_key_env": "ALPACA_API_KEY_V6",
+        "secret_key_env": "ALPACA_SECRET_KEY_V6",
+        "start": date(2026, 6, 19),
+        "color": "#8c564b",
+    },
 }
 
 
@@ -107,9 +123,15 @@ def fetch_profile(name: str, profile: dict) -> ProfileResult | None:
     )
     history = trading_client.get_portfolio_history(history_filter=request)
 
+    # Portfolio timestamps are unix seconds, stamped at ~8pm ET (the UTC value
+    # rolls into the next calendar day). Convert to America/New_York so the index
+    # carries the true trading-session date rather than the UTC date.
     portfolio_raw = pd.Series(
         history.equity,
-        index=[pd.Timestamp(ts, unit="s").date() for ts in history.timestamp],
+        index=[
+            pd.Timestamp(ts, unit="s", tz="UTC").tz_convert("America/New_York").date()
+            for ts in history.timestamp
+        ],
         name="portfolio",
     ).dropna().loc[lambda s: s > 0]
     portfolio_raw.index = pd.DatetimeIndex(portfolio_raw.index)
@@ -134,16 +156,23 @@ def fetch_profile(name: str, profile: dict) -> ProfileResult | None:
     if isinstance(sp_df.index, pd.MultiIndex):
         sp_df = sp_df.droplevel(0)
 
+    # Daily bar timestamps are stamped at midnight ET (04:00/05:00 UTC). Convert
+    # to America/New_York so the index is the session date — matching the
+    # portfolio index above. (Previously this added +1 day to compensate for the
+    # portfolio index being mislabeled in UTC; both are now session-dated directly.)
     sp_raw = sp_df["close"].dropna().rename("sp500")
     sp_raw.index = pd.DatetimeIndex(
-        [(ts.date() + timedelta(days=1)) for ts in sp_raw.index]
+        [ts.tz_convert("America/New_York").date() for ts in sp_raw.index]
     )
 
     # --- Align ---
+    # The inner join already bounds the window to the portfolio's first equity
+    # reading (the funding-day baseline), so no explicit >= start clip is needed —
+    # clipping would wrongly drop the first session when `start` lands on a
+    # weekend (e.g. funded Fri, configured Sat).
     aligned = (
         pd.concat([portfolio_raw, sp_raw], axis=1, sort=True)
         .dropna()
-        .loc[lambda df: df.index >= pd.Timestamp(start)]
     )
     if len(aligned) < 2:
         print(f"[{name}] Not enough shared dates ({len(aligned)}).")
@@ -157,6 +186,7 @@ def fetch_profile(name: str, profile: dict) -> ProfileResult | None:
     portfolio_value = aligned["portfolio"].iloc[-1]
     portfolio_start_value = aligned["portfolio"].iloc[0]
     sp_equivalent = portfolio_start_value * (1 + sp_growth / 100)
+    first_date = aligned.index[0].date()
     last_date = aligned.index[-1].date()
 
     print(f"[{name}] {portfolio_growth:+.2f}% vs SPY {sp_growth:+.2f}%  "
@@ -175,7 +205,7 @@ def fetch_profile(name: str, profile: dict) -> ProfileResult | None:
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.set_title(
-        f"{label} vs S&P 500 — {start.strftime('%b %d')} onwards\n"
+        f"{label} vs S&P 500 — {first_date.strftime('%b %d')} onwards\n"
         f"{label}: {portfolio_growth:+.2f}% (\\${portfolio_value:,.0f})  |  "
         f"S&P 500: {sp_growth:+.2f}% (\\${sp_equivalent:,.0f})",
         fontsize=13,
@@ -195,7 +225,7 @@ def fetch_profile(name: str, profile: dict) -> ProfileResult | None:
         name=name,
         label=label,
         short_label=profile["short_label"],
-        start=start,
+        start=first_date,
         end=last_date,
         trading_days=len(aligned),
         portfolio_growth=portfolio_growth,

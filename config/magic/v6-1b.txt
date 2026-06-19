@@ -1,0 +1,52 @@
+# Magic Formula Investing — minimum market cap $1B, top 50 (Joel Greenblatt)
+# Source: magicformulainvesting.com screener, captured 2026-06-18.
+# Held EQUAL-WEIGHT. Refresh by re-running the screener and replacing this list.
+# OTC/untradeable-on-Alpaca names removed: AFMJF, WDOFF.
+ANF
+ADBE
+ACM
+MO
+DOX
+BBWI
+BCRX
+BLKB
+BMY
+BKE
+CARG
+CPRX
+GIB
+CTSH
+COLL
+CROX
+DECK
+DLX
+DBD
+EPAM
+FOXA
+IT
+GEN
+GCT
+GDDY
+HRB
+HRMY
+HPQ
+IDT
+INVA
+WLY
+KFY
+MTCH
+MMS
+OMC
+OTEX
+MD
+PRDO
+PXED
+PBI
+PLTK
+PTC
+SIRI
+STRA
+CI
+TNET
+VSNT
+YELP
