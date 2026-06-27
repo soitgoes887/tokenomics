@@ -98,7 +98,7 @@ jobs:
       - uses: pulumi/actions@v6
         with:
           command: up
-          stack-name: dev
+          stack-name: soitgoes887/tokenomics/dev
           work-dir: infrastructure
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
