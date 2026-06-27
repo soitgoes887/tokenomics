@@ -22,6 +22,9 @@ on:
       - "requirements.txt"
       - ".github/workflows/**"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -95,7 +98,7 @@ jobs:
       - uses: pulumi/actions@v6
         with:
           command: up
-          stack-name: dev
+          stack-name: soitgoes887/tokenomics/dev
           work-dir: infrastructure
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}

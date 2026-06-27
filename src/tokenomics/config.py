@@ -168,6 +168,13 @@ class ScoringProfileConfig(BaseModel):
     exclusion_list: Optional[str] = None
     post_filters: PostFiltersConfig = Field(default_factory=PostFiltersConfig)
     regime_config: Optional[RegimeConfig] = None
+    # Fixed equal-weight holdings list (e.g. Magic Formula). When set, the profile
+    # is loaded from this file by the magic loader job instead of being scored.
+    holdings_list: Optional[str] = None
+    # Optional per-profile rebalancing override. When set, it fully replaces the
+    # global `rebalancing` block for this profile (used to give the Magic Formula
+    # profiles true equal weighting with no position/sector caps).
+    rebalancing: Optional[RebalancingConfig] = None
 
 
 class ScoringProfilesConfig(BaseModel):
@@ -223,7 +230,7 @@ class Secrets(BaseSettings):
     perplexity_api_key: str = ""
     marketaux_api_key: str = ""
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 def load_config(config_path: Path = Path("config/settings.yaml")) -> AppConfig:

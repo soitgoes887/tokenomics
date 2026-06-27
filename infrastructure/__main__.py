@@ -16,6 +16,10 @@ alpaca_api_key_v3 = config.require_secret("alpaca_api_key_v3")
 alpaca_secret_key_v3 = config.require_secret("alpaca_secret_key_v3")
 alpaca_api_key_v4 = config.require_secret("alpaca_api_key_v4")
 alpaca_secret_key_v4 = config.require_secret("alpaca_secret_key_v4")
+alpaca_api_key_v5 = config.require_secret("alpaca_api_key_v5")
+alpaca_secret_key_v5 = config.require_secret("alpaca_secret_key_v5")
+alpaca_api_key_v6 = config.require_secret("alpaca_api_key_v6")
+alpaca_secret_key_v6 = config.require_secret("alpaca_secret_key_v6")
 gemini_api_key = config.require_secret("gemini_api_key")
 finnhub_api_key = config.require_secret("finnhub_api_key")
 perplexity_api_key = config.require_secret("perplexity_api_key")
@@ -66,6 +70,10 @@ secret = k8s.core.v1.Secret(
         "ALPACA_SECRET_KEY_V3": alpaca_secret_key_v3,
         "ALPACA_API_KEY_V4": alpaca_api_key_v4,
         "ALPACA_SECRET_KEY_V4": alpaca_secret_key_v4,
+        "ALPACA_API_KEY_V5": alpaca_api_key_v5,
+        "ALPACA_SECRET_KEY_V5": alpaca_secret_key_v5,
+        "ALPACA_API_KEY_V6": alpaca_api_key_v6,
+        "ALPACA_SECRET_KEY_V6": alpaca_secret_key_v6,
         "GEMINI_API_KEY": gemini_api_key,
         "FINNHUB_API_KEY": finnhub_api_key,
         "PERPLEXITY_API_KEY": perplexity_api_key,
@@ -363,6 +371,106 @@ for profile_name, schedules in PROFILES.items():
         profile_name, schedules["rebalancer_schedule"]
     )
 
+# ---------- Magic Formula profiles (v5/v6) ----------
+#
+# These hold a fixed equal-weight list (no scoring). A monthly "magic loader"
+# writes the holdings list to Redis, then the standard rebalancer trades into it.
+# The loader mounts settings.yaml via subPath so the image's config/magic/*.txt
+# holdings files remain visible (a full /app/config ConfigMap mount would shadow them).
+
+MAGIC_PROFILES = {
+    "tokenomics_v5_magic_100m": {
+        "loader_schedule": "0 13 1-7 * 1",      # First Monday of month, 1PM UTC
+        "rebalancer_schedule": "0 18 1-7 * 1",  # First Monday of month, 6PM UTC
+    },
+    "tokenomics_v6_magic_1b": {
+        "loader_schedule": "30 13 1-7 * 1",     # First Monday of month, 1:30PM UTC
+        "rebalancer_schedule": "0 19 1-7 * 1",  # First Monday of month, 7PM UTC
+    },
+}
+
+
+def make_magic_loader_cronjob(profile_name: str, schedule: str):
+    """Create a Magic Formula holdings-loader CronJob for a fixed-list profile."""
+    resource_name = f"magic-loader-{profile_name.replace('_', '-')}"
+    return k8s.batch.v1.CronJob(
+        resource_name,
+        metadata=k8s.meta.v1.ObjectMetaArgs(
+            name=resource_name,
+            namespace=namespace.metadata.name,
+        ),
+        spec=k8s.batch.v1.CronJobSpecArgs(
+            schedule=schedule,
+            concurrency_policy="Forbid",
+            successful_jobs_history_limit=3,
+            failed_jobs_history_limit=3,
+            job_template=k8s.batch.v1.JobTemplateSpecArgs(
+                spec=k8s.batch.v1.JobSpecArgs(
+                    ttl_seconds_after_finished=86400,
+                    backoff_limit=2,
+                    template=k8s.core.v1.PodTemplateSpecArgs(
+                        metadata=k8s.meta.v1.ObjectMetaArgs(
+                            labels={
+                                "app": "tokenomics",
+                                "component": "magic-loader",
+                                "profile": profile_name,
+                            },
+                        ),
+                        spec=k8s.core.v1.PodSpecArgs(
+                            restart_policy="OnFailure",
+                            containers=[
+                                k8s.core.v1.ContainerArgs(
+                                    name="magic-loader",
+                                    image=image,
+                                    command=["python", "-m", "tokenomics.magic.magic_job"],
+                                    env=[
+                                        *REDIS_ENV,
+                                        k8s.core.v1.EnvVarArgs(
+                                            name="SCORING_PROFILE",
+                                            value=profile_name,
+                                        ),
+                                    ],
+                                    volume_mounts=[
+                                        # subPath mounts only settings.yaml, leaving the
+                                        # image's config/magic/*.txt holdings files intact.
+                                        k8s.core.v1.VolumeMountArgs(
+                                            name="config",
+                                            mount_path="/app/config/settings.yaml",
+                                            sub_path="settings.yaml",
+                                            read_only=True,
+                                        ),
+                                    ],
+                                    resources=k8s.core.v1.ResourceRequirementsArgs(
+                                        requests={"cpu": "50m", "memory": "128Mi"},
+                                        limits={"cpu": "200m", "memory": "256Mi"},
+                                    ),
+                                ),
+                            ],
+                            volumes=[
+                                k8s.core.v1.VolumeArgs(
+                                    name="config",
+                                    config_map=k8s.core.v1.ConfigMapVolumeSourceArgs(
+                                        name=rebalancer_configmap.metadata.name,
+                                    ),
+                                ),
+                            ],
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+magic_loader_cronjobs = {}
+for profile_name, schedules in MAGIC_PROFILES.items():
+    magic_loader_cronjobs[profile_name] = make_magic_loader_cronjob(
+        profile_name, schedules["loader_schedule"]
+    )
+    rebalancer_cronjobs[profile_name] = make_rebalancer_cronjob(
+        profile_name, schedules["rebalancer_schedule"]
+    )
+
 # ---------- Universe refresh CronJob (shared, monthly) ----------
 
 universe_cronjob = k8s.batch.v1.CronJob(
@@ -591,4 +699,8 @@ pulumi.export("discord-update-cronjob", discord_update_cronjob.metadata.name)
 for profile_name in PROFILES:
     safe_name = profile_name.replace("_", "-")
     pulumi.export(f"fundamentals-cronjob-{safe_name}", fundamentals_cronjobs[profile_name].metadata.name)
+    pulumi.export(f"rebalancer-cronjob-{safe_name}", rebalancer_cronjobs[profile_name].metadata.name)
+for profile_name in MAGIC_PROFILES:
+    safe_name = profile_name.replace("_", "-")
+    pulumi.export(f"magic-loader-cronjob-{safe_name}", magic_loader_cronjobs[profile_name].metadata.name)
     pulumi.export(f"rebalancer-cronjob-{safe_name}", rebalancer_cronjobs[profile_name].metadata.name)

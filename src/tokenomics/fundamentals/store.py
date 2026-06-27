@@ -224,6 +224,47 @@ class FundamentalsStore:
 
         return saved
 
+    def replace_scores(
+        self,
+        symbols: list[str],
+        score: float = 100.0,
+        ttl_seconds: int | None = None,
+    ) -> int:
+        """Replace the entire scores set with a fixed equal-weight holdings list.
+
+        Used by the Magic Formula loader: every symbol is written with the same
+        score, so downstream equal-weighting treats them identically. The set is
+        deleted first so symbols that dropped out of the list are removed (and
+        will be sold on the next rebalance).
+
+        Args:
+            symbols: Tickers to hold (order irrelevant; duplicates collapse)
+            score: Uniform score to assign each symbol
+            ttl_seconds: Expiry for the scores set (default: 45 days, comfortably
+                         longer than a monthly refresh cadence)
+
+        Returns:
+            Number of symbols written
+        """
+        if ttl_seconds is None:
+            ttl_seconds = 45 * 24 * 60 * 60
+
+        pipeline = self._client.pipeline()
+        pipeline.delete(self.SCORES_KEY)
+        unique = sorted(set(symbols))
+        if unique:
+            pipeline.zadd(self.SCORES_KEY, {s: score for s in unique})
+            pipeline.expire(self.SCORES_KEY, ttl_seconds)
+        pipeline.execute()
+
+        logger.info(
+            "fundamentals_store.scores_replaced",
+            namespace=self.KEY_PREFIX,
+            count=len(unique),
+            score=score,
+        )
+        return len(unique)
+
     def get_company(self, symbol: str) -> Optional[dict]:
         """Get a company's fundamentals and score from Redis.
 

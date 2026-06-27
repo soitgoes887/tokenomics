@@ -89,6 +89,40 @@ scoring_profiles:
         vix_spike_days: 3
         cooldown_days: 15            # Max 1 emergency rebalance per 15 days
 
+  tokenomics_v5_magic_100m:
+    scorer_class: "FixedList"
+    redis_namespace: "fundamentals:v5_magic_100m"
+    alpaca_api_key_env: "ALPACA_API_KEY_V5"
+    alpaca_secret_key_env: "ALPACA_SECRET_KEY_V5"
+    description: "Magic Formula (Greenblatt) — equal-weight, min market cap $100M"
+    holdings_list: "config/magic/v5-100m.txt"
+    # True equal weighting: no caps, no min-score gate. top_n_stocks must exceed
+    # the holdings count so nothing is truncated.
+    rebalancing:
+      top_n_stocks: 60
+      weighting: "equal"
+      max_position_pct: 100.0
+      max_sector_pct: 100.0
+      min_score: 0.0
+      rebalance_threshold_pct: 20.0
+      min_trade_usd: 100.0
+
+  tokenomics_v6_magic_1b:
+    scorer_class: "FixedList"
+    redis_namespace: "fundamentals:v6_magic_1b"
+    alpaca_api_key_env: "ALPACA_API_KEY_V6"
+    alpaca_secret_key_env: "ALPACA_SECRET_KEY_V6"
+    description: "Magic Formula (Greenblatt) — equal-weight, min market cap $1B"
+    holdings_list: "config/magic/v6-1b.txt"
+    rebalancing:
+      top_n_stocks: 60
+      weighting: "equal"
+      max_position_pct: 100.0
+      max_sector_pct: 100.0
+      min_score: 0.0
+      rebalance_threshold_pct: 20.0
+      min_trade_usd: 100.0
+
   default_profile: "tokenomics_v2_base"
 
 trading:
