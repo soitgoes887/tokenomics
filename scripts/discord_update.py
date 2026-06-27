@@ -242,10 +242,15 @@ def fetch_profile(name: str, profile: dict) -> ProfileResult | None:
 # ---------------------------------------------------------------------------
 def build_message(results: list[ProfileResult]) -> str:
     today = date.today().strftime("%b %d")
+    count_words = {
+        1: "one strategy", 2: "two strategies", 3: "three strategies",
+        4: "four strategies", 5: "five strategies", 6: "six strategies",
+    }
+    count_phrase = count_words.get(len(results), f"{len(results)} strategies")
     lines = [
         f"🚀 **Update ({today})**",
         "",
-        "Running three strategies live on paper trading with $100k initial capital. "
+        f"Running {count_phrase} live on paper trading with $100k initial capital each. "
         "Here are the results:",
         "",
     ]
